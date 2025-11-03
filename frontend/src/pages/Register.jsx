@@ -69,13 +69,10 @@ function Register() {
       formData.append("password", password);
       formData.append("address", address);
       formData.append("profile_pic", profilePic);
-      formData.append("accountType", accountType);
+     formData.append("account_type", accountType); 
       formData.append("phoneno", phoneno);
 
-
-      const response = await axios.post("http://localhost:5000/register", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const response = await axios.post("http://localhost:8081/api/user/register", formData);
 
       if (response.status >= 200 && response.status < 300) {
         setSuccess(response.data.message || "Registered successfully ✅");

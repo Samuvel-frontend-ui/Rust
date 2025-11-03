@@ -11,10 +11,8 @@ function ResetPassword() {
   const query = new URLSearchParams(useLocation().search);
   const token = query.get("token");
 
-  // Regex for strong password
   const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
 
-  // Optional: list of common weak passwords
   const commonPasswords = ["123456", "password", "qwerty", "12345678", "111111"];
 
   const handleSubmit = async (e) => {
@@ -23,13 +21,11 @@ function ResetPassword() {
     const trimmedPassword = password.trim();
     const trimmedConfirm = confirmPassword.trim();
 
-    // Check empty (already handled by required, but extra safety)
     if (!trimmedPassword || !trimmedConfirm) {
       setMessage("Please fill all fields.");
       return;
     }
 
-    // Check password strength
     if (!passwordRegex.test(trimmedPassword)) {
       setMessage(
         "Password must be at least 8 characters long, include uppercase, lowercase, number, and special character."
@@ -37,19 +33,16 @@ function ResetPassword() {
       return;
     }
 
-    // Check common passwords
     if (commonPasswords.includes(trimmedPassword)) {
       setMessage("Please choose a stronger, less common password.");
       return;
     }
 
-    // Check confirm password
     if (trimmedPassword !== trimmedConfirm) {
       setMessage("Passwords do not match.");
       return;
     }
 
-    // If all validations pass, make API request
     try {
       await axios.post("http://localhost:5000/reset-password", {
         token,
@@ -70,7 +63,6 @@ function ResetPassword() {
             <div className="card-body">
               <h2 className="card-title text-center mb-4">Reset Password</h2>
               <form onSubmit={handleSubmit}>
-                {/* New Password */}
                 <div className="mb-3">
                   <label htmlFor="password" className="form-label">
                     New Password
@@ -93,11 +85,9 @@ function ResetPassword() {
                       {showPassword ? "Hide" : "Show"}
                     </button>
                   </div>
-                  {/* Real-time password feedback */}
                  
                 </div>
 
-                {/* Confirm Password */}
                 <div className="mb-3">
                   <label htmlFor="confirmPassword" className="form-label">
                     Confirm Password
@@ -127,7 +117,6 @@ function ResetPassword() {
                 </button>
               </form>
 
-              {/* Display messages */}
               {message && (
                 <div
                   className={`alert mt-3 ${
