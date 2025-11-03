@@ -23,8 +23,14 @@ pub async fn register_user(
     let mut user_account_type = String::from("public");
     let mut profile_pic_path: Option<String> = None;
 
+    // DEBUG: Track all fields received
+    let mut fields_received = Vec::new();
+
     while let Some(Ok(mut field)) = payload.next().await {
         let field_name = field.name().to_string();
+        fields_received.push(field_name.clone());
+        
+        println!("📥 Received field: {}", field_name);
         
         match field_name.as_str() {
             "name" | "email" | "password" | "address" | "phoneno" | "account_type" => {
@@ -33,6 +39,8 @@ pub async fn register_user(
                     data.extend_from_slice(&chunk);
                 }
                 let value = String::from_utf8(data).unwrap_or_default();
+                
+                println!("📝 Field '{}' = '{}'", field_name, value);
                 
                 match field_name.as_str() {
                     "name" => user_name = value,
@@ -45,25 +53,58 @@ pub async fn register_user(
                 }
             }
             "profile_pic" => {
-                let filename = field
-                    .content_disposition()
+                println!("🖼️  Processing profile_pic field");
+                
+                let content_disposition = field.content_disposition();
+                let filename = content_disposition
                     .get_filename()
-                    .map(|f| format!("{}_{}", Uuid::new_v4(), f))
-                    .unwrap_or_else(|| format!("{}.jpg", Uuid::new_v4()));
+                    .map(|f| {
+                        println!("📷 Original filename: {}", f);
+                        format!("{}_{}", Uuid::new_v4(), f)
+                    })
+                    .unwrap_or_else(|| {
+                        let default = format!("{}.jpg", Uuid::new_v4());
+                        println!("📷 No filename, using default: {}", default);
+                        default
+                    });
                 
                 let filepath = format!("./uploads/{}", filename);
+                println!("💾 Saving to: {}", filepath);
+                
                 std::fs::create_dir_all("./uploads").ok();
                 
-                let mut file = std::fs::File::create(&filepath).unwrap();
+                let mut file = match std::fs::File::create(&filepath) {
+                    Ok(f) => {
+                        println!("✅ File created successfully");
+                        f
+                    },
+                    Err(e) => {
+                        println!("❌ Failed to create file: {}", e);
+                        return HttpResponse::InternalServerError().json(json!({
+                            "message": "Failed to create file"
+                        }));
+                    }
+                };
+                
+                let mut bytes_written = 0;
                 while let Some(Ok(chunk)) = field.next().await {
+                    bytes_written += chunk.len();
                     file.write_all(&chunk).unwrap();
                 }
                 
-                profile_pic_path = Some(filename);
+                println!("✅ Wrote {} bytes", bytes_written);
+                profile_pic_path = Some(filename.clone());
+                println!("✅ Set profile_pic_path to: {}", filename);
             }
-            _ => {}
+            _ => {
+                println!("⚠️  Unknown field: {}", field_name);
+            }
         }
     }
+
+    println!("\n📊 Summary:");
+    println!("Fields received: {:?}", fields_received);
+    println!("profile_pic_path final value: {:?}", profile_pic_path);
 
     let conn = &mut pool.get().expect("DB connection failed");
 
@@ -90,8 +131,10 @@ pub async fn register_user(
         address: user_address,
         phoneno: user_phoneno,
         account_type: user_account_type,
-        profile_pic: profile_pic_path,
+        profile_pic: profile_pic_path.clone(),
     };
+
+    println!("👤 NewUser struct profile_pic: {:?}", new_user.profile_pic);
 
     diesel::insert_into(users)
         .values(&new_user)
@@ -100,6 +143,7 @@ pub async fn register_user(
 
     HttpResponse::Ok().json(json!({
         "message": "Registered successfully ✅",
-        "user": user_email
+        "user": user_email,
+        "profile_pic": new_user.profile_pic
     }))
 }
