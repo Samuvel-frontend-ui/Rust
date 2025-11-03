@@ -62,22 +62,17 @@ function Register() {
 
     try {
       setLoading(true);
-const formData = new FormData();
-formData.append("name", name);
-formData.append("email", email);
-formData.append("password", password);
-formData.append("address", address);
-formData.append("account_type", accountType);
-formData.append("phoneno", phoneno);
 
-// ✅ Correct file append
-if (fileInput && fileInput.files.length > 0) {
-  formData.append("profile_pic", fileInput.files[0]);
-}
+      const formData = new FormData();
+      formData.append("name", name);
+      formData.append("email", email);
+      formData.append("password", password);
+      formData.append("address", address);
+      formData.append("profile_pic", profilePic);
+     formData.append("account_type", accountType); 
+      formData.append("phoneno", phoneno);
 
-const response = await axios.post("http://127.0.0.1:8080/register", formData, {
-  headers: { "Content-Type": "multipart/form-data" },
-});
+      const response = await axios.post("http://localhost:8081/api/user/register", formData);
 
       if (response.status >= 200 && response.status < 300) {
         setSuccess(response.data.message || "Registered successfully ✅");
@@ -299,4 +294,3 @@ const response = await axios.post("http://127.0.0.1:8080/register", formData, {
 }
 
 export default Register;
-

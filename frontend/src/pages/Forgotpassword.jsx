@@ -12,8 +12,8 @@ function ForgotPassword() {
     setError("");
 
     try {
-      const res = await axios.post("http://localhost:5000/forgotpassword", { email });
-      setMessage(res.data.message); // e.g., "Password reset link sent"
+      const res = await axios.post("http://127.0.0.1:8081/api/user/forgot-password", { email });
+      setMessage(res.data.message); 
     } catch (err) {
       // if backend responds with "user not found"
       if (err.response?.status === 400) {

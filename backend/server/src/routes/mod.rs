@@ -1,6 +1,9 @@
 use actix_web::web;
-use crate::handlers::user_handler::register_user;
+use crate::db::DbPool;
 
-pub fn config(cfg: &mut web::ServiceConfig) {
-    cfg.service(register_user); 
+pub mod user_route;
+
+pub fn init(cfg: &mut web::ServiceConfig, pool: DbPool, jwt_secret: String) {
+    user_route::init(cfg, pool, jwt_secret);
 }
+

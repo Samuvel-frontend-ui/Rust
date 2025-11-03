@@ -1,127 +1,129 @@
 use actix_multipart::Multipart;
-use actix_web::{post, web, HttpResponse, Responder};
+use actix_web::{web, HttpResponse, HttpRequest, HttpMessage, Responder};
 use diesel::prelude::*;
-use bcrypt::{hash, DEFAULT_COST};
+use bcrypt::{hash, verify, DEFAULT_COST};
+use jsonwebtoken::{encode, Header, EncodingKey};
+use lettre::{
+    message::{header, Message},
+    transport::smtp::authentication::Credentials,
+    SmtpTransport, Transport,
+};
 use futures_util::StreamExt;
 use std::io::Write;
 use uuid::Uuid;
 use serde_json::json;
+use chrono::{Utc, Duration};
+
 use crate::db::DbPool;
-use crate::models::user::{User, NewUser};
+use crate::models::user::{
+    User, NewUser, LoginRequest, ForgotPasswordRequest, ResetPasswordRequest, Claims, PasswordResetToken, AuthTokenClaims,
+    PaginationParams , UsersResponse,
+};
+
 use crate::schema::users::dsl::*;
 
-#[post("/register")]
-pub async fn register_user(
-    pool: web::Data<DbPool>,
-    mut payload: Multipart,
-) -> impl Responder {
+pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> impl Responder {
     let mut user_name = String::new();
     let mut user_email = String::new();
     let mut user_password = String::new();
     let mut user_address = String::new();
     let mut user_phoneno = String::new();
     let mut user_account_type = String::from("public");
-    let mut profile_pic_path: Option<String> = None;
+    let mut profile_pic_filename: Option<String> = None;
 
-    // DEBUG: Track all fields received
-    let mut fields_received = Vec::new();
+    while let Some(item) = payload.next().await {
+        let mut field = match item {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("❌ Multipart read error: {}", e);
+                return HttpResponse::BadRequest().json(json!({"message": "Invalid upload"}));
+            }
+        };
 
-    while let Some(Ok(mut field)) = payload.next().await {
         let field_name = field.name().to_string();
-        fields_received.push(field_name.clone());
-        
-        println!("📥 Received field: {}", field_name);
-        
-        match field_name.as_str() {
-            "name" | "email" | "password" | "address" | "phoneno" | "account_type" => {
-                let mut data = Vec::new();
-                while let Some(Ok(chunk)) = field.next().await {
-                    data.extend_from_slice(&chunk);
-                }
-                let value = String::from_utf8(data).unwrap_or_default();
-                
-                println!("📝 Field '{}' = '{}'", field_name, value);
-                
-                match field_name.as_str() {
-                    "name" => user_name = value,
-                    "email" => user_email = value,
-                    "password" => user_password = value,
-                    "address" => user_address = value,
-                    "phoneno" => user_phoneno = value,
-                    "account_type" => user_account_type = value,
-                    _ => {}
+
+        if ["name", "email", "password", "address", "phoneno", "account_type"]
+            .contains(&field_name.as_str())
+        {
+            let mut data = Vec::new();
+            while let Some(chunk) = field.next().await {
+                if let Ok(bytes) = chunk {
+                    data.extend_from_slice(&bytes);
                 }
             }
-            "profile_pic" => {
-                println!("🖼️  Processing profile_pic field");
-                
-                let content_disposition = field.content_disposition();
-                let filename = content_disposition
-                    .get_filename()
-                    .map(|f| {
-                        println!("📷 Original filename: {}", f);
-                        format!("{}_{}", Uuid::new_v4(), f)
-                    })
-                    .unwrap_or_else(|| {
-                        let default = format!("{}.jpg", Uuid::new_v4());
-                        println!("📷 No filename, using default: {}", default);
-                        default
-                    });
-                
-                let filepath = format!("./uploads/{}", filename);
-                println!("💾 Saving to: {}", filepath);
-                
-                std::fs::create_dir_all("./uploads").ok();
-                
-                let mut file = match std::fs::File::create(&filepath) {
-                    Ok(f) => {
-                        println!("✅ File created successfully");
-                        f
-                    },
-                    Err(e) => {
-                        println!("❌ Failed to create file: {}", e);
-                        return HttpResponse::InternalServerError().json(json!({
-                            "message": "Failed to create file"
-                        }));
+            let value = String::from_utf8(data).unwrap_or_default();
+
+            match field_name.as_str() {
+                "name" => user_name = value,
+                "email" => user_email = value,
+                "password" => user_password = value,
+                "address" => user_address = value,
+                "phoneno" => user_phoneno = value,
+                "account_type" => user_account_type = value,
+                _ => {}
+            }
+        } else if field_name == "profile_pic" {
+            let upload_dir = "./files/userprofile";
+            if let Err(e) = std::fs::create_dir_all(upload_dir) {
+                eprintln!("❌ Failed to create upload dir: {}", e);
+            }
+
+            let filename = field
+                .content_disposition()
+                .get_filename()
+                .map(|f| format!("{}_{}", Uuid::new_v4(), f))
+                .unwrap_or_else(|| format!("{}.jpg", Uuid::new_v4()));
+
+            let filepath = format!("{}/{}", upload_dir, filename);
+            match std::fs::File::create(&filepath) {
+                Ok(mut file) => {
+                    while let Some(chunk) = field.next().await {
+                        if let Ok(data) = chunk {
+                            if let Err(e) = file.write_all(&data) {
+                                eprintln!("File write error: {}", e);
+                            }
+                        }
                     }
-                };
-                
-                let mut bytes_written = 0;
-                while let Some(Ok(chunk)) = field.next().await {
-                    bytes_written += chunk.len();
-                    file.write_all(&chunk).unwrap();
+                    profile_pic_filename = Some(filename.clone());
                 }
-                
-                println!("✅ Wrote {} bytes", bytes_written);
-                profile_pic_path = Some(filename.clone());
-                println!("✅ Set profile_pic_path to: {}", filename);
-            }
-            _ => {
-                println!("⚠️  Unknown field: {}", field_name);
+                Err(e) => {
+                    eprintln!("❌ File create error: {}", e);
+                }
             }
         }
     }
 
-    println!("\n📊 Summary:");
-    println!("Fields received: {:?}", fields_received);
-    println!("profile_pic_path final value: {:?}", profile_pic_path);
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ DB connection error: {}", e);
+            return HttpResponse::InternalServerError()
+                .json(json!({"message": "Database connection failed"}));
+        }
+    };
 
-    let conn = &mut pool.get().expect("DB connection failed");
-
-    // Check if email exists
-    let existing = users
-        .filter(email.eq(&user_email))
-        .first::<User>(conn)
-        .optional()
-        .expect("Error checking email");
-
-    if existing.is_some() {
-        return HttpResponse::Conflict().json(json!({
-            "message": "Email already exists ❌"
-        }));
+    if user_email.trim().is_empty() {
+        return HttpResponse::BadRequest().json(json!({"message": "Email is required"}));
     }
 
-    let hashed = hash(&user_password, DEFAULT_COST).unwrap();
+    let existing = users
+        .filter(email.eq(&user_email))
+        .first::<User>(&mut conn)
+        .optional()
+        .unwrap_or(None);
+
+    if existing.is_some() {
+        return HttpResponse::Conflict().json(json!({"message": "Email already exists ❌"}));
+    }
+
+    let hashed = match hash(&user_password, DEFAULT_COST) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("❌ Hash error: {}", e);
+            return HttpResponse::InternalServerError()
+                .json(json!({"message": "Password hashing failed"}));
+        }
+    };
 
     let new_user = NewUser {
         id: Uuid::new_v4(),
@@ -131,19 +133,199 @@ pub async fn register_user(
         address: user_address,
         phoneno: user_phoneno,
         account_type: user_account_type,
-        profile_pic: profile_pic_path.clone(),
+        profile_pic: profile_pic_filename.clone(),
     };
 
-    println!("👤 NewUser struct profile_pic: {:?}", new_user.profile_pic);
-
-    diesel::insert_into(users)
-        .values(&new_user)
-        .execute(conn)
-        .expect("Error inserting user");
+    if let Err(e) = diesel::insert_into(users).values(&new_user).execute(&mut conn) {
+        eprintln!("❌ DB insert error: {}", e);
+        return HttpResponse::InternalServerError().json(json!({"message": "Database insert failed"}));
+    }
 
     HttpResponse::Ok().json(json!({
-        "message": "Registered successfully ✅",
-        "user": user_email,
-        "profile_pic": new_user.profile_pic
+        "message": "Registered successfully ✅"
     }))
 }
+
+pub async fn login(pool: web::Data<DbPool>, data: web::Json<LoginRequest>) -> impl Responder {
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json("Database connection failed"),
+    };
+
+    let result = users.filter(email.eq(&data.email)).first::<User>(&mut conn);
+
+    match result {
+        Ok(user) => {
+            // Safe password check
+            let is_valid = verify(&data.password, &user.password).unwrap_or(false);
+
+            if !is_valid {
+                return HttpResponse::Unauthorized().json(serde_json::json!({
+                    "message": "Invalid password"
+                }));
+            }
+
+            // Safe JWT creation
+            let expiration = Utc::now()
+                .checked_add_signed(Duration::hours(24))
+                .expect("valid timestamp")
+                .timestamp() as usize;
+
+            let claims = Claims {
+                id: user.id.to_string(),
+                name: user.name.clone(),
+                email: user.email.clone(),
+                exp: expiration,
+            };
+
+            let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "mysecretkey".into());
+
+            let token = match encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref())) {
+                Ok(t) => t,
+                Err(_) => return HttpResponse::InternalServerError().json("Token creation failed"),
+            };
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "message": "Login successful",
+                "token": token,
+                "user": {
+                    "id": user.id,
+                    "name": user.name,
+                    "email": user.email,
+                }
+            }))
+        }
+        Err(_) => HttpResponse::Unauthorized().json(serde_json::json!({
+            "message": "User not found"
+        })),
+    }
+}
+
+pub async fn forgot_password(pool: web::Data<DbPool>,body: web::Json<ForgotPasswordRequest>,) -> impl Responder {
+    let conn = &mut pool.get().unwrap();
+
+    let user_result = users.filter(email.eq(&body.email)).first::<User>(conn);
+
+    if let Ok(user) = user_result {
+        let token = Uuid::new_v4().to_string();
+        let expires_at = Utc::now().naive_utc() + chrono::Duration::hours(1);
+
+        let _ = diesel::insert_into(crate::schema::password_reset_tokens::table)
+            .values((
+                crate::schema::password_reset_tokens::user_id.eq(user.id),
+                crate::schema::password_reset_tokens::token.eq(&token),
+                crate::schema::password_reset_tokens::expires_at.eq(expires_at),
+            ))
+            .execute(conn);
+
+        let reset_link = format!("http://localhost:5173/reset-password?token={}", token);
+
+        let email_result = {
+            let email_sender = "samuvel2k4@gmail.com";
+            let smtp_username = "samuvel2k4@gmail.com";
+            let smtp_password = "mbqy zkpi ybob xxyb";
+            let smtp_server = "smtp.gmail.com";
+
+            let mail_msg = Message::builder()
+                .from(email_sender.parse().unwrap())
+                .to(user.email.parse().unwrap())
+                .subject("Password Reset Request")
+                .header(header::ContentType::TEXT_HTML)
+                .body(format!(
+                    "<p>Hello, {}</p>\
+                     <p>Click below to reset your password:</p>\
+                     <a href=\"{}\">Reset Password</a>\
+                     <p>This link expires in 1 hour.</p>",
+                    user.name, reset_link
+                ))
+                .unwrap();
+
+            let creds = Credentials::new(smtp_username.to_string(), smtp_password.to_string());
+            let mailer = SmtpTransport::relay(smtp_server).unwrap().credentials(creds).build();
+
+            mailer.send(&mail_msg)
+        };
+
+        match email_result {
+            Ok(_) => HttpResponse::Ok().json(json!({ "message": "Reset link sent successfully" })),
+            Err(err) => HttpResponse::InternalServerError()
+                .json(json!({ "error": format!("Email send failed: {}", err) })),
+        }
+    } else {
+        HttpResponse::BadRequest().json(json!({ "error": "Invalid user email" }))
+    }
+}
+
+pub async fn reset_password(pool: web::Data<DbPool>,body: web::Json<ResetPasswordRequest>,) -> impl Responder {
+    use crate::schema::{users::dsl as u, password_reset_tokens::dsl as t};
+
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return HttpResponse::InternalServerError().json(json!({ "error": "Database connection failed" })),
+    };
+
+    let token_row = t::password_reset_tokens
+        .filter(t::token.eq(&body.token))
+        .filter(t::expires_at.gt(Utc::now().naive_utc()))
+        .first::<PasswordResetToken>(&mut conn);
+
+    if let Ok(reset_row) = token_row {
+        let hashed = match hash(&body.new_password, 10) {
+            Ok(h) => h,
+            Err(_) => return HttpResponse::InternalServerError().json(json!({ "error": "Password hashing failed" })),
+        };
+
+        if diesel::update(u::users.filter(u::id.eq(reset_row.user_id)))
+            .set(u::password.eq(&hashed))
+            .execute(&mut conn)
+            .is_err()
+        {
+            return HttpResponse::InternalServerError().json(json!({ "error": "Failed to update password" }));
+        }
+
+        if diesel::delete(t::password_reset_tokens.filter(t::token.eq(&body.token)))
+            .execute(&mut conn)
+            .is_err()
+        {
+            return HttpResponse::InternalServerError().json(json!({ "error": "Failed to delete token" }));
+        }
+
+        HttpResponse::Ok().json(json!({ "message": "Password reset successful" }))
+    } else {
+        HttpResponse::BadRequest().json(json!({ "error": "Token expired or invalid" }))
+    }
+}
+
+pub async fn get_users(
+    req: HttpRequest,
+    pool: web::Data<DbPool>,
+    query: web::Query<PaginationParams>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let extensions = req.extensions();
+    let current_user = if let Some(claims) = extensions.get::<AuthTokenClaims>() {
+        claims
+    } else {
+        return Err(actix_web::error::ErrorUnauthorized("Unauthorized"));
+    };
+
+    let user_id = current_user.id;
+
+    let page = query.page.unwrap_or(1).max(1).min(MAX_PAGE);
+    let per_page = query.per_page.unwrap_or(10).max(1).min(100);
+
+    let conn = &mut pool.get().map_err(|e| {
+        actix_web::error::ErrorInternalServerError(format!("Database error: {}", e))
+    })?;
+
+    Ok(HttpResponse::Ok().json(json!({
+        "success": true,
+        "data": {
+            "users": [],  // Replace with actual users
+            "page": page,
+            "per_page": per_page
+        }
+    })))
+}
+
+
+
