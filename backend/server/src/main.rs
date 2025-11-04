@@ -1,42 +1,43 @@
-mod db;
-mod schema;
-mod models;
-mod handlers;
-mod routes;
-mod middleware;
+pub mod db;
+pub mod models;
+pub mod schema;
+pub mod handlers;
+pub mod routes;
+pub mod middleware;
 
-use actix_web::{App, HttpServer, middleware::Logger};
+use actix_web::{App, HttpServer, middleware::Logger, web};
+use actix_files::Files;
 use actix_cors::Cors;
-use db::connection;
-use crate::middleware::auth::AuthMiddlewareFactory; // ✅ add this line
+use db::{DbPool, connection};
+use std::env;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let pool = connection();
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
 
     println!("✅ Database connected successfully");
     println!("🚀 Server running on http://127.0.0.1:8081");
 
     HttpServer::new(move || {
         let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header()
+            .allowed_origin("http://localhost:5173")
+            .allowed_origin("http://127.0.0.1:5173")
+            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+            .allowed_headers(vec!["Content-Type", "Authorization"])
+            .supports_credentials()
             .max_age(3600);
-App::new()
-    .wrap(Logger::default())
-    .wrap(cors)
-    .wrap(AuthMiddlewareFactory {
-        pool: pool.clone(),
-        jwt_secret: "mysecretkey".to_string(), // replace with your actual secret
-    })
-    .app_data(actix_web::web::Data::new(pool.clone()))
-    .configure(routes::init)
 
+        App::new()
+            .wrap(Logger::default())
+            .wrap(cors)
+            .app_data(web::Data::new(pool.clone()))
+            // Your API/config/init here
+            .configure(|cfg| routes::init(cfg, pool.clone(), "mysecretkey".to_string()))
+            // Serve profile pictures statically
+            .service(Files::new("/profile_pic", "./files/userprofile").show_files_listing())
     })
     .bind(("127.0.0.1", 8081))?
     .run()
     .await
 }
-
-

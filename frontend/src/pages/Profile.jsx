@@ -46,7 +46,7 @@ function Profile() {
     const fetchProfile = async () => {
       try {
         if (!token || !id) return;
-        const res = await axios.get(`http://localhost:5000/profile/${id}`, {
+        const res = await axios.get(`http://localhost:8081/api/user/auth/profile/${id}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const profileData = res.data;
@@ -245,8 +245,8 @@ function Profile() {
             <div className="d-flex align-items-center mb-3">
               <img
                 src={
-                  profile.profile_pic
-                    ? `http://localhost:5000/profile_pic/${profile.profile_pic}`
+                  profile.profile_pic 
+                    ? `http://127.0.0.1:8081/profile_pic/${profile.profile_pic}`
                     : "/default-profile.png"
                 }
                 alt={profile.username}

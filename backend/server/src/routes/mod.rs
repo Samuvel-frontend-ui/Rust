@@ -4,6 +4,8 @@ use crate::db::DbPool;
 pub mod user_route;
 
 pub fn init(cfg: &mut web::ServiceConfig, pool: DbPool, jwt_secret: String) {
-    user_route::init(cfg, pool, jwt_secret);
+    cfg.service(
+        web::scope("/api")
+            .configure(|scope_cfg| user_route::init(scope_cfg, pool.clone(), jwt_secret.clone())),
+    );
 }
-

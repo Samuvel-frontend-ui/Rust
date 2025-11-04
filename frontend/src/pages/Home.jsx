@@ -48,10 +48,9 @@ const handleProfileClick = () => {
       const token = localStorage.getItem("token");
       const page = Math.floor(currentOffset / usersPerChunk) + 1;
 
-      const res = await axios.get(
-        `http://localhost:5000/users?page=${page}&limit=${usersPerChunk}&loggedInUserId=${user.id}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+     const res = await axios.get(
+     `http://127.0.0.1:8081/api/user/auth/get-users?page=${page}&limit=${usersPerChunk}`,
+       {headers: { Authorization: `Bearer ${token}`, },});
 
       const fetchedUsers = res.data.users || [];
 
@@ -65,7 +64,7 @@ const handleProfileClick = () => {
       if (fetchedUsers.length < usersPerChunk) setHasMore(false);
 
       if (currentOffset === 0) {
-        const followRes = await axios.get(`http://localhost:5000/following/${user.id}`, {
+        const followRes = await axios.get(`"http://127.0.0.1:8081/api/user/auth/request/${user.id}"`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         setFollowing(followRes.data.following || []);
@@ -73,7 +72,7 @@ const handleProfileClick = () => {
       }
     } catch (err) {
       console.error("Error fetching users:", err);
-      setError("Failed to fetch users");
+      setError("Failed to load request server");
     } finally {
       setLoading(false);
       setLoadingMore(false);
@@ -92,7 +91,7 @@ const handleProfileClick = () => {
       else if (targetUser.accounttype === "private") isRequest = true;
 
       const res = await axios.post(
-        "http://localhost:5000/follow",
+        "http://localhost:8081/api/user/auth/follow",
         { userId: user.id, targetId: targetUser.id, action, isRequest },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -153,18 +152,17 @@ const handleProfileClick = () => {
                  onMouseEnter={e => e.currentTarget.style.transform = "translateY(-5px)"}
                  onMouseLeave={e => e.currentTarget.style.transform = "translateY(0)"}>
               <div className="card-body d-flex align-items-center">
-             <img src={u.profile_pic ? `http://localhost:5000/profile_pic/${u.profile_pic}` : "/default-profile.png"}
-                  alt={u.name}
-                  className="rounded-circle border border-secondary me-3"
-                  style={{ width: "60px", height: "60px", objectFit: "cover" }}
-                />
-
+             <img src={u.profile_pic ? `http://127.0.0.1:8081/profile_pic/${u.profile_pic}` : "/default-profile.png"}
+     alt={u.name}
+     className="rounded-circle border border-secondary me-3"
+     style={{ width: "60px", height: "60px", objectFit: "cover" }}
+/>
                 <div className="flex-grow-1">
                   <h6 className="mb-1 fw-bold">{u.name}</h6>
                   <small className="text-muted d-block mb-1">{u.email}</small>
                   <div className="d-flex align-items-center gap-2">
-                    <small className="text-primary">{u.accounttype}</small>
-                    {u.accounttype === "private" && !following.includes(u.id) && !pendingRequests.includes(u.id) && (
+                    <small className="text-primary">{u.account_type}</small>
+                    {u.account_type === "private" && !following.includes(u.id) && !pendingRequests.includes(u.id) && (
                       <span className="badge bg-warning text-dark">Private</span>
                     )}
                   </div>

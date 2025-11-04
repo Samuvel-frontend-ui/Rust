@@ -1,6 +1,16 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    follows (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        target_id -> Uuid,
+        status -> Text,
+        created_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
     password_reset_tokens (id) {
         id -> Int4,
         user_id -> Uuid,
@@ -31,4 +41,4 @@ diesel::table! {
 
 diesel::joinable!(password_reset_tokens -> users (user_id));
 
-diesel::allow_tables_to_appear_in_same_query!(password_reset_tokens, users,);
+diesel::allow_tables_to_appear_in_same_query!(follows, password_reset_tokens, users,);

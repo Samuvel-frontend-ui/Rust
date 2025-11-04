@@ -2,9 +2,10 @@ use diesel::prelude::*;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 use chrono::NaiveDateTime;
-use crate::schema::{users, password_reset_tokens};
+use crate::schema::{users, password_reset_tokens, follows};
 
-#[derive(Queryable, Serialize)]
+#[derive(Queryable, Serialize, Clone )]
+#[diesel(table_name = users)]
 pub struct User {
     pub id: Uuid,
     pub name: String,
@@ -43,11 +44,11 @@ pub struct ForgotPasswordRequest {
     pub email: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Claims {
+    pub email: String,
     pub id: String,
     pub name: String,
-    pub email: String,
     pub exp: usize,
 }
 
@@ -66,22 +67,63 @@ pub struct ResetPasswordRequest {
     pub new_password: String,
 }
 
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AuthTokenClaims {
+#[derive(Queryable, Serialize)]
+pub struct UserListItem {
     pub id: Uuid,
-    pub exp: usize,
+    pub name: String,
+    pub email: String,
+    pub account_type: String,
+    pub profile_pic: Option<String>,
+    pub created_at: NaiveDateTime,
+}
+
+#[derive(Queryable, Insertable)]
+#[diesel(table_name = follows)]
+pub struct Follow {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub target_id: Uuid,
+    pub status: String,
+    pub created_at: Option<chrono::NaiveDateTime>,
+}
+
+#[derive(Insertable)]
+#[table_name = "follows"]
+pub struct NewFollow {
+    pub user_id: Uuid,
+    pub target_id: Uuid,
+    pub status: String,
+}
+                            
+#[derive(Queryable, Selectable, Serialize)]
+#[diesel(table_name = crate::schema::users)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct UserProfile {
+    pub id: Uuid,
+    pub name: String,
+    pub email: String,
+    pub profile_pic: Option<String>,
+    pub account_type: String,
+    pub phoneno: String,
+    pub address: String,
+}
+
+#[derive(AsChangeset)]
+#[diesel(table_name = users)]
+pub struct UserUpdate {
+    pub name: String,
+    pub email: String,
+    pub address: String,
+    pub account_type: Option<String>,
+    pub phoneno: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
-pub struct PaginationParams {
-    pub page: Option<i64>,
-    pub limit: Option<i64>,
-}
-
-#[derive(serde::Serialize)]
-pub struct UsersResponse {
-    page: i64,
-    limit: i64,
-    users: Vec<User>,
+pub struct ProfileUpdateBody {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub account_type: Option<String>,
+    pub phoneno: Option<String>,
+    pub address: String,
 }
