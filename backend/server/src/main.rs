@@ -14,7 +14,7 @@ use std::env;
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let pool = connection();
-    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    
 
     println!("✅ Database connected successfully");
     println!("🚀 Server running on http://127.0.0.1:8081");
@@ -32,9 +32,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             .wrap(cors)
             .app_data(web::Data::new(pool.clone()))
-            // Your API/config/init here
             .configure(|cfg| routes::init(cfg, pool.clone(), "mysecretkey".to_string()))
-            // Serve profile pictures statically
             .service(Files::new("/profile_pic", "./files/userprofile").show_files_listing())
     })
     .bind(("127.0.0.1", 8081))?

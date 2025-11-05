@@ -9,3 +9,5 @@ pub fn init(cfg: &mut web::ServiceConfig, pool: DbPool, jwt_secret: String) {
             .configure(|scope_cfg| user_route::init(scope_cfg, pool.clone(), jwt_secret.clone())),
     );
 }
+
+

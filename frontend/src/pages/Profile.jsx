@@ -5,6 +5,8 @@ import { AuthContext } from "../authcontext.jsx";
 import PhoneInput from "react-phone-input-2";
 import "react-phone-input-2/lib/style.css";
 
+const API_BASE = "http://localhost:8081/api/user/auth";
+
 function Profile() {
   const { id } = useParams();
   const { user, token } = useContext(AuthContext);
@@ -15,7 +17,6 @@ function Profile() {
   const [editing, setEditing] = useState(false);
   const [followersCount, setFollowersCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
-
   const [formData, setFormData] = useState({
     username: "",
     email: "",
@@ -25,7 +26,6 @@ function Profile() {
   });
 
   const [pendingRequests, setPendingRequests] = useState([]);
-
   const [followersList, setFollowersList] = useState([]);
   const [followersPage, setFollowersPage] = useState(1);
   const [hasMoreFollowers, setHasMoreFollowers] = useState(true);
@@ -40,25 +40,25 @@ function Profile() {
   const [showFollowers, setShowFollowers] = useState(false);
   const [showFollowing, setShowFollowing] = useState(false);
 
-  const isOwner = user && id && Number(user.id) === Number(id);
+  const isOwner = !id || (user && String(user.id) === String(id));
 
+  // ✅ Fetch Profile
   useEffect(() => {
     const fetchProfile = async () => {
       try {
-        if (!token || !id) return;
-        const res = await axios.get(`http://localhost:8081/api/user/auth/profile/${id}`, {
+        if (!token) return;
+
+        const profileId = id || user.id;
+        const url = `${API_BASE}/profile/${profileId}`;
+
+        const res = await axios.get(url, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        const profileData = res.data;
 
+        const profileData = res.data;
+        setProfile(profileData);
         setFollowersCount(profileData.FollowersCount || 0);
         setFollowingCount(profileData.FollowingCount || 0);
-        
-        console.log("backend data: ", profileData);
-        console.log("followerscount:", profileData.FollowersCount);
-        console.log("followingcount:", profileData.FollowingCount);
-        
-        setProfile(profileData);
 
         setFormData({
           username: profileData.username || "",
@@ -68,9 +68,10 @@ function Profile() {
           address: profileData.address || "",
         });
 
+        // Load pending requests only if owner + private account
         if (isOwner && profileData.accountType?.toLowerCase() === "private") {
           const requestsRes = await axios.get(
-            `http://localhost:5000/followreq/${id}`,
+            `${API_BASE}/follow-req/${profileData.id}`,
             { headers: { Authorization: `Bearer ${token}` } }
           );
           setPendingRequests(requestsRes.data.pendingRequests || []);
@@ -81,19 +82,21 @@ function Profile() {
         setLoadingProfile(false);
       }
     };
-    fetchProfile();
-  }, [id, token, isOwner]);
 
+    fetchProfile();
+  }, [id, token, isOwner, user?.id]);
+
+  // ✅ Followers
   const fetchFollowers = async (page = 1) => {
-    if (!id) return;
+    if (!profile?.id) return;
     setLoadingFollowers(true);
     try {
       const res = await axios.get(
-        `http://localhost:5000/followers/list/${id}?page=${page}&limit=${itemsPerPage}`,
+        `${API_BASE}/followers/${profile.id}?page=${page}&limit=${itemsPerPage}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      const data = res.data.followers || [];
 
+      const data = res.data.followers || [];
       setFollowersList((prev) => (page === 1 ? data : [...prev, ...data]));
       setHasMoreFollowers(data.length === itemsPerPage);
       setFollowersPage(page);
@@ -104,16 +107,17 @@ function Profile() {
     }
   };
 
+  // ✅ Following
   const fetchFollowing = async (page = 1) => {
-    if (!id) return;
+    if (!profile?.id) return;
     setLoadingFollowing(true);
     try {
       const res = await axios.get(
-        `http://localhost:5000/following/list/${id}?page=${page}&limit=${itemsPerPage}`,
+        `${API_BASE}/followings/${profile.id}?page=${page}&limit=${itemsPerPage}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
+      console.log("Following data:", res.data);
       const data = res.data.following || [];
-
       setFollowingList((prev) => (page === 1 ? data : [...prev, ...data]));
       setHasMoreFollowing(data.length === itemsPerPage);
       setFollowingPage(page);
@@ -124,11 +128,13 @@ function Profile() {
     }
   };
 
+  // ✅ Handle changes
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
+  // ✅ Update profile
   const handleUpdate = async () => {
     try {
       const formattedPhone =
@@ -136,8 +142,9 @@ function Profile() {
           ? `+${formData.phoneNo}`
           : formData.phoneNo;
 
+      const url = `${API_BASE}/profile-update/${id || user.id}`;
       const res = await axios.put(
-        `http://localhost:5000/profile/${id}`,
+        url,
         {
           username: formData.username,
           email: formData.email,
@@ -151,378 +158,512 @@ function Profile() {
 
       const updatedProfile = res.data;
       setProfile(updatedProfile);
-      setFormData({
-        username: updatedProfile.username || "",
-        email: updatedProfile.email || "",
-        accountType: updatedProfile.accountType || "public",
-        phoneNo: updatedProfile.phoneNo || "",
-        address: updatedProfile.address || "",
-      });
       setEditing(false);
-      alert("Profile updated!");
+      alert("Profile updated successfully!");
     } catch (err) {
       console.error("Failed to update profile:", err);
       alert("Failed to update profile");
     }
   };
 
+  // ✅ Handle follow request actions
   const handleRequestAction = async (requestId, action) => {
     try {
       await axios.post(
-        `http://localhost:5000/followreq/handle/${requestId}`,
+        `${API_BASE}/handle-follow-req/${requestId}`,
         { ownerId: user.id, action },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-
       setPendingRequests((prev) => prev.filter((r) => r.id !== requestId));
-
+      
       if (action === "approve") {
-        const approvedUser = pendingRequests.find((r) => r.id === requestId);
-        if (approvedUser) {
-          setFollowersList((prev) => [
-            ...prev,
-            {
-              id: approvedUser.requesterId,
-              username: approvedUser.username,
-              profile_pic: approvedUser.profile_pic,
-            },
-          ]);
-          setFollowersCount(prev => prev + 1);
-        }      
-      } 
+        setFollowersCount((prev) => prev + 1);
+      }
+      
+      alert(`Request ${action}ed successfully`);
     } catch (err) {
       console.error("Follow request action failed:", err);
-      alert(`Failed to ${action === "approve" ? "approve" : "reject"} request`);
+      alert(`Failed to ${action} request`);
     }
   };
 
+  // ✅ Follow/Unfollow - FIXED
   const handleFollowAction = async (targetUserId, action) => {
     try {
       await axios.post(
-        `http://localhost:5000/follow`,
+        "http://localhost:8081/api/user/auth/follow",
         { 
           userId: user.id, 
           targetId: targetUserId,
-          action: action,
+          action, 
           isRequest: false
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      if (action === "follow") {
-        fetchFollowers(1);
-        // Update following count if current user is following
-        if (isOwner) {
-          setFollowingCount(prev => prev + 1);
-        }
-      } else if (action === "unfollow") {
+      if (action === "unfollow") {
+        setFollowingCount((prev) => Math.max(prev - 1, 0));
         setFollowingList((prev) => prev.filter((f) => f.id !== targetUserId));
-        // Update following count
-        if (isOwner) {
-          setFollowingCount(prev => prev - 1);
-        }
+      } else if (action === "follow") {
+        setFollowingCount((prev) => prev + 1);
       }
       
-      alert(`Successfully ${action === "follow" ? "followed" : "unfollowed"} user`);
+      alert(`Successfully ${action}ed the user.`);
     } catch (err) {
       console.error(`Failed to ${action}:`, err);
       alert(`Failed to ${action} user`);
     }
   };
 
-  if (loadingProfile) return <p className="text-center mt-4">Loading profile...</p>;
-  if (!profile) return <p className="text-center mt-4">Profile not found</p>;
+  // ✅ UI Rendering
+  if (loadingProfile)
+    return (
+      <div className="d-flex justify-content-center align-items-center vh-100">
+        <div className="text-center">
+          <div className="spinner-border text-primary" role="status" style={{ width: "3rem", height: "3rem" }}>
+            <span className="visually-hidden">Loading...</span>
+          </div>
+          <p className="mt-3 text-muted">Loading profile...</p>
+        </div>
+      </div>
+    );
+
+  if (!profile)
+    return (
+      <div className="container mt-5">
+        <div className="alert alert-warning text-center" role="alert">
+          <i className="bi bi-exclamation-triangle-fill me-2"></i>
+          Profile not found
+        </div>
+      </div>
+    );
 
   return (
-    <div className="container mt-4">
-      <button className="btn btn-outline-secondary mb-4" onClick={() => navigate("/home")}>
-        ⬅️ Back 
-      </button>
+    <div className="container-fluid py-4" style={{ backgroundColor: "#f8f9fa", minHeight: "100vh" }}>
+      <div className="container">
+        <button
+          className="btn btn-outline-primary mb-4 shadow-sm"
+          onClick={() => navigate("/home")}
+        >
+          <i className="bi bi-arrow-left me-2"></i>Back to Home
+        </button>
 
-      <div className="row">
-        <div className="col-md-8">
-          <div className="card shadow-sm p-4 mb-4">
-            <div className="d-flex align-items-center mb-3">
-              <img
-                src={
-                  profile.profile_pic 
-                    ? `http://127.0.0.1:8081/profile_pic/${profile.profile_pic}`
-                    : "/default-profile.png"
-                }
-                alt={profile.username}
-                className="rounded-circle border border-secondary me-3"
-                style={{ width: "100px", height: "100px", objectFit: "cover" }}
-              />
-              <div className="flex-grow-1">
-                <div className="d-flex align-items-center mb-2">
-                  <h4 className="me-3 mb-0">{profile.username}</h4>
-                  {isOwner && (
-                    <button
-                      className="btn btn-outline-primary btn-sm"
-                      onClick={() => setEditing(true)}
-                    >
-                      Edit Profile
-                    </button>
-                  )}
+        <div className="row g-4">
+          {/* LEFT SIDE */}
+          <div className="col-lg-8">
+            {/* Profile Card */}
+            <div className="card border-0 shadow-sm mb-4">
+              <div className="card-body p-4">
+                <div className="d-flex align-items-start mb-4">
+                  <div className="position-relative">
+                    <img
+                      src={
+                        profile.profile_pic
+                          ? `http://127.0.0.1:8081/profile_pic/${profile.profile_pic}`
+                          : "/default-profile.png"
+                      }
+                      alt={profile.username}
+                      className="rounded-circle border border-3 border-primary shadow"
+                      style={{
+                        width: "120px",
+                        height: "120px",
+                        objectFit: "cover",
+                      }}
+                    />
+                    {profile.accountType?.toLowerCase() === "private" && (
+                      <span className="position-absolute bottom-0 end-0 badge bg-warning text-dark rounded-circle p-2">
+                        <i className="bi bi-lock-fill"></i>
+                      </span>
+                    )}
+                  </div>
+                  
+                  <div className="ms-4 flex-grow-1">
+                    <div className="d-flex align-items-center justify-content-between mb-3">
+                      <h3 className="mb-0 fw-bold">{profile.username}</h3>
+                      {isOwner && (
+                        <button
+                          className="btn btn-primary btn-sm shadow-sm"
+                          onClick={() => setEditing(true)}
+                        >
+                          <i className="bi bi-pencil-square me-1"></i>Edit Profile
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="d-flex gap-4 mb-3">
+                      <div
+                        className="text-center cursor-pointer"
+                        style={{ cursor: "pointer" }}
+                        onClick={() => {
+                          fetchFollowers(1);
+                          setShowFollowers(true);
+                          setShowFollowing(false);
+                        }}
+                      >
+                        <div className="fs-4 fw-bold text-primary">{followersCount}</div>
+                        <small className="text-muted">Followers</small>
+                      </div>
+                      <div
+                        className="text-center cursor-pointer"
+                        style={{ cursor: "pointer" }}
+                        onClick={() => {
+                          fetchFollowing(1);
+                          setShowFollowing(true);
+                          setShowFollowers(false);
+                        }}
+                      >
+                        <div className="fs-4 fw-bold text-success">{followingCount}</div>
+                        <small className="text-muted">Following</small>
+                      </div>
+                    </div>
+
+                    <span className={`badge ${profile.accountType?.toLowerCase() === "private" ? "bg-warning text-dark" : "bg-success"} shadow-sm`}>
+                      <i className={`bi ${profile.accountType?.toLowerCase() === "private" ? "bi-lock-fill" : "bi-globe"} me-1`}></i>
+                      {profile.accountType}
+                    </span>
+                  </div>
                 </div>
-                
-                <div className="d-flex gap-3">
-                  <small
-                    style={{ cursor: "pointer", color: "blue" }}
-                    onClick={() => {
-                      fetchFollowers(1);
-                      setShowFollowers(true);
-                      setShowFollowing(false);
-                    }}
-                  >
-                    Followers {followersCount}
-                  </small>
-                  <small
-                    style={{ cursor: "pointer", color: "blue" }}
-                    onClick={() => {
-                      fetchFollowing(1);
-                      setShowFollowing(true);
-                      setShowFollowers(false);
-                    }}
-                  >
-                    Following {followingCount}
-                  </small>
-                </div>
+
+                <hr className="my-4" />
+
+                {/* Edit Mode */}
+                {editing ? (
+                  <div className="animate__animated animate__fadeIn">
+                    <h5 className="mb-3 text-primary">
+                      <i className="bi bi-pencil-square me-2"></i>Edit Profile
+                    </h5>
+                    <div className="row g-3">
+                      <div className="col-md-6">
+                        <label className="form-label fw-semibold">
+                          <i className="bi bi-person me-1"></i>Username
+                        </label>
+                        <input
+                          className="form-control shadow-sm"
+                          name="username"
+                          value={formData.username}
+                          onChange={handleChange}
+                          placeholder="Enter username"
+                        />
+                      </div>
+                      <div className="col-md-6">
+                        <label className="form-label fw-semibold">
+                          <i className="bi bi-envelope me-1"></i>Email
+                        </label>
+                        <input
+                          className="form-control shadow-sm"
+                          name="email"
+                          type="email"
+                          value={formData.email}
+                          onChange={handleChange}
+                          placeholder="Enter email"
+                        />
+                      </div>
+                      <div className="col-md-6">
+                        <label className="form-label fw-semibold">
+                          <i className="bi bi-telephone me-1"></i>Phone Number
+                        </label>
+                        <PhoneInput
+                          country={"us"}
+                          value={formData.phoneNo}
+                          onChange={(phone) =>
+                            setFormData((prev) => ({ ...prev, phoneNo: phone }))
+                          }
+                          inputProps={{
+                            name: "phoneNo",
+                            required: true,
+                            className: "form-control shadow-sm",
+                          }}
+                          containerClass="w-100"
+                        />
+                      </div>
+                      <div className="col-md-6">
+                        <label className="form-label fw-semibold">
+                          <i className="bi bi-shield-lock me-1"></i>Account Type
+                        </label>
+                        <select
+                          className="form-select shadow-sm"
+                          name="accountType"
+                          value={formData.accountType}
+                          onChange={handleChange}
+                        >
+                          <option value="public">🌍 Public</option>
+                          <option value="private">🔒 Private</option>
+                        </select>
+                      </div>
+                      <div className="col-12">
+                        <label className="form-label fw-semibold">
+                          <i className="bi bi-geo-alt me-1"></i>Address
+                        </label>
+                        <input
+                          className="form-control shadow-sm"
+                          name="address"
+                          value={formData.address}
+                          onChange={handleChange}
+                          placeholder="Enter address"
+                        />
+                      </div>
+                    </div>
+                    <div className="d-flex gap-2 mt-4">
+                      <button className="btn btn-success shadow-sm px-4" onClick={handleUpdate}>
+                        <i className="bi bi-check-circle me-1"></i>Save Changes
+                      </button>
+                      <button
+                        className="btn btn-secondary shadow-sm px-4"
+                        onClick={() => setEditing(false)}
+                      >
+                        <i className="bi bi-x-circle me-1"></i>Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="row g-3">
+                    <div className="col-md-6">
+                      <div className="p-3 bg-light rounded">
+                        <small className="text-muted d-block mb-1">
+                          <i className="bi bi-envelope me-1"></i>Email
+                        </small>
+                        <div className="fw-semibold">
+                          {isOwner || profile.accountType?.toLowerCase() === "public"
+                            ? profile.email
+                            : <span className="text-muted"><i className="bi bi-lock-fill me-1"></i>Private</span>}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-md-6">
+                      <div className="p-3 bg-light rounded">
+                        <small className="text-muted d-block mb-1">
+                          <i className="bi bi-telephone me-1"></i>Phone Number
+                        </small>
+                        <div className="fw-semibold">
+                          {isOwner || profile.accountType?.toLowerCase() === "public"
+                            ? profile.phoneNo || "-"
+                            : <span className="text-muted"><i className="bi bi-lock-fill me-1"></i>Private</span>}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-12">
+                      <div className="p-3 bg-light rounded">
+                        <small className="text-muted d-block mb-1">
+                          <i className="bi bi-geo-alt me-1"></i>Address
+                        </small>
+                        <div className="fw-semibold">
+                          {isOwner || profile.accountType?.toLowerCase() === "public"
+                            ? profile.address || "-"
+                            : <span className="text-muted"><i className="bi bi-lock-fill me-1"></i>Private</span>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            {editing ? (
-              <div className="mt-3">
-                <div className="mb-2">
-                  <label className="form-label">Username</label>
-                  <input
-                    className="form-control"
-                    name="username"
-                    value={formData.username}
-                    onChange={handleChange}
-                  />
+            {/* Followers List */}
+            {showFollowers && (
+              <div className="card border-0 shadow-sm mb-4">
+                <div className="card-header bg-primary text-white">
+                  <h5 className="mb-0">
+                    <i className="bi bi-people-fill me-2"></i>
+                    Followers ({followersList.length})
+                  </h5>
                 </div>
-                <div className="mb-2">
-                  <label className="form-label">Email</label>
-                  <input
-                    className="form-control"
-                    name="email"
-                    value={formData.email}
-                    onChange={handleChange}
-                  />
-                </div>
-                <div className="mb-2">
-                  <label className="form-label">Phone Number</label>
-                  <PhoneInput
-                    country={"us"}
-                    value={formData.phoneNo}
-                    onChange={(phone) => setFormData((prev) => ({ ...prev, phoneNo: phone }))}
-                    inputProps={{ name: "phoneNo", required: true, className: "form-control" }}
-                    containerClass="w-100"
-                  />
-                </div>
-                <div className="mb-2">
-                  <label className="form-label">Address</label>
-                  <input
-                    className="form-control"
-                    name="address"
-                    value={formData.address}
-                    onChange={handleChange}
-                  />
-                </div>
-                <div className="mb-3">
-                  <label className="form-label">Account Type</label>
-                  <select
-                    className="form-select"
-                    name="accountType"
-                    value={formData.accountType}
-                    onChange={handleChange}
-                  >
-                    <option value="public">Public</option>
-                    <option value="private">Private</option>
-                  </select>
-                </div>
-                <div className="d-flex gap-2">
-                  <button className="btn btn-success" onClick={handleUpdate}>
-                    Save
-                  </button>
-                  <button className="btn btn-secondary" onClick={() => setEditing(false)}>
-                    Cancel
-                  </button>
+                <div className="card-body">
+                  {loadingFollowers ? (
+                    <div className="text-center py-4">
+                      <div className="spinner-border text-primary" role="status">
+                        <span className="visually-hidden">Loading...</span>
+                      </div>
+                    </div>
+                  ) : followersList.length === 0 ? (
+                    <div className="text-center py-4 text-muted">
+                      <i className="bi bi-person-x fs-1 d-block mb-2"></i>
+                      No followers found
+                    </div>
+                  ) : (
+                    <>
+                      <div className="row g-3">
+                        {followersList.map((f, index) => (
+                          <div key={f.id || `follower-${index}`} className="col-12">
+                            <div className="d-flex align-items-center justify-content-between p-3 bg-light rounded shadow-sm">
+                              <div className="d-flex align-items-center">
+                                <img
+                                  src={
+                                    f.profile_pic
+                                      ? `http://127.0.0.1:8081/profile_pic/${f.profile_pic}`
+                                      : "/default-profile.png"
+                                  }
+                                  alt={f.username}
+                                  className="rounded-circle border border-2 border-primary me-3"
+                                  style={{
+                                    width: "50px",
+                                    height: "50px",
+                                    objectFit: "cover",
+                                  }}
+                                />
+                                <span className="fw-semibold">{f.name}</span>
+                              </div>
+                              {!isOwner && (
+                                <button
+                                  className="btn btn-primary btn-sm shadow-sm"
+                                  onClick={() => handleFollowAction(f.id, "follow")}
+                                >
+                                  <i className="bi bi-person-plus me-1"></i>Follow
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {hasMoreFollowers && (
+                        <button
+                          className="btn btn-outline-primary w-100 mt-3"
+                          onClick={() => fetchFollowers(followersPage + 1)}
+                          disabled={loadingFollowers}
+                        >
+                          <i className="bi bi-arrow-down-circle me-1"></i>Load More
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
-            ) : (
-              <div className="mt-2">
-                <p>
-                  <strong>Email:</strong>{" "}
-                  {isOwner || profile.accountType?.toLowerCase() === "public"
-                    ? profile.email
-                    : "Private"}
-                </p>
-                <p>
-                  <strong>Phone Number:</strong>{" "}
-                  {isOwner || profile.accountType?.toLowerCase() === "public"
-                    ? profile.phoneNo || "-"
-                    : "Private"}
-                </p>
-                <p>
-                  <strong>Address:</strong>{" "}
-                  {isOwner || profile.accountType?.toLowerCase() === "public"
-                    ? profile.address || "-"
-                    : "Private"}
-                </p>
-                <p>
-                  <strong>Account Type:</strong> {profile.accountType}
-                </p>
+            )}
+
+            {/* Following List */}
+            {showFollowing && (
+              <div className="card border-0 shadow-sm mb-4">
+                <div className="card-header bg-success text-white">
+                  <h5 className="mb-0">
+                    <i className="bi bi-person-check-fill me-2"></i>
+                    Following ({followingList.length})
+                  </h5>
+                </div>
+                <div className="card-body">
+                  {loadingFollowing ? (
+                    <div className="text-center py-4">
+                      <div className="spinner-border text-success" role="status">
+                        <span className="visually-hidden">Loading...</span>
+                      </div>
+                    </div>
+                  ) : followingList.length === 0 ? (
+                    <div className="text-center py-4 text-muted">
+                      <i className="bi bi-person-x fs-1 d-block mb-2"></i>
+                      Not following anyone yet
+                    </div>
+                  ) : (
+                    <>
+                      <div className="row g-3">
+                        {followingList.map((f, index) => (
+                          <div key={f.id || `following-${index}`} className="col-12">
+                            <div className="d-flex align-items-center justify-content-between p-3 bg-light rounded shadow-sm">
+                              <div className="d-flex align-items-center">
+                                <img
+                                  src={
+                                    f.profile_pic
+                                      ? `http://127.0.0.1:8081/profile_pic/${f.profile_pic}`
+                                      : "/default-profile.png"
+                                  }
+                                  alt={f.username}
+                                  className="rounded-circle border border-2 border-success me-3"
+                                  style={{
+                                    width: "50px",
+                                    height: "50px",
+                                    objectFit: "cover",
+                                  }}
+                                />
+                                <span className="fw-semibold">{f.name}</span>
+                              </div>
+                              {isOwner && (
+                                <button
+                                  className="btn btn-outline-danger btn-sm shadow-sm"
+                                  onClick={() => handleFollowAction(f.id, "unfollow")}
+                                >
+                                  <i className="bi bi-person-dash me-1"></i>Unfollow
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {hasMoreFollowing && (
+                        <button
+                          className="btn btn-outline-success w-100 mt-3"
+                          onClick={() => fetchFollowing(followingPage + 1)}
+                          disabled={loadingFollowing}
+                        >
+                          <i className="bi bi-arrow-down-circle me-1"></i>Load More
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             )}
           </div>
 
-          {showFollowers && (
-            <div className="card shadow-sm p-3 mt-3">
-              <h5>Followers List ({followersList.length})</h5>
-              {loadingFollowers ? (
-                <p>Loading followers...</p>
-              ) : followersList.length === 0 ? (
-                <p>No followers found.</p>
-              ) : (
-                <>
-                  {followersList.map((f) => (
-                    <div key={f.id} className="d-flex align-items-center justify-content-between mb-2 p-2 border rounded">
-                      <div className="d-flex align-items-center">
-                        <img
-                          src={
-                            f.profile_pic
-                              ? `http://localhost:5000/profile_pic/${f.profile_pic}`
-                              : "/default-profile.png"
-                          }
-                          alt={f.username}
-                          className="rounded-circle me-3"
-                          style={{ width: "50px", height: "50px", objectFit: "cover" }}
-                        />
-                        <span>{f.username}</span>
-                      </div>
-                      {!isOwner && (
-                        <button 
-                          className="btn btn-success btn-sm" 
-                          onClick={() => handleFollowAction(f.id, "follow")}
-                        >
-                          Follow
-                        </button>
-                      )}
+          {/* RIGHT SIDE - Pending Requests */}
+          {isOwner && profile.accountType?.toLowerCase() === "private" && (
+            <div className="col-lg-4">
+              <div className="card border-0 shadow-sm sticky-top" style={{ top: "20px" }}>
+                <div className="card-header bg-warning text-dark">
+                  <h5 className="mb-0">
+                    <i className="bi bi-bell-fill me-2"></i>
+                    Pending Requests ({pendingRequests.length})
+                  </h5>
+                </div>
+                <div className="card-body" style={{ maxHeight: "600px", overflowY: "auto" }}>
+                  {pendingRequests.length === 0 ? (
+                    <div className="text-center py-4 text-muted">
+                      <i className="bi bi-inbox fs-1 d-block mb-2"></i>
+                      No pending requests
                     </div>
-                  ))}
-                  {hasMoreFollowers && (
-                    <button 
-                      className="btn btn-primary btn-sm mt-2" 
-                      onClick={() => fetchFollowers(followersPage + 1)}
-                      disabled={loadingFollowers}
-                    >
-                      Load More
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          {showFollowing && (
-            <div className="card shadow-sm p-3 mt-3">
-              <h5>Following List ({followingList.length})</h5>
-              {loadingFollowing ? (
-                <p>Loading following...</p>
-              ) : followingList.length === 0 ? (
-                <p>No following found.</p>
-              ) : (
-                <>
-                  {followingList.map((f) => (
-                    <div key={f.id} className="d-flex align-items-center justify-content-between mb-2 p-2 border rounded">
-                      <div className="d-flex align-items-center">
-                        <img
-                          src={
-                            f.profile_pic
-                              ? `http://localhost:5000/profile_pic/${f.profile_pic}`
-                              : "/default-profile.png"
-                          }
-                          alt={f.username}
-                          className="rounded-circle me-3"
-                          style={{ width: "50px", height: "50px", objectFit: "cover" }}
-                        />
-                        <span>{f.username}</span>
-                      </div>
-                      {isOwner && (
-                        <button 
-                          className="btn btn-danger btn-sm" 
-                          onClick={() => handleFollowAction(f.id, "unfollow")}
+                  ) : (
+                    <div className="d-flex flex-column gap-3">
+                      {pendingRequests.map((req, index) => (
+                        <div
+                          key={req.id || `request-${index}`}
+                          className="p-3 bg-light rounded shadow-sm"
                         >
-                          Unfollow
-                        </button>
-                      )}
+                          <div className="d-flex align-items-center mb-3">
+                            <img
+                              src={
+                                req.profile_pic
+                                  ? `http://127.0.0.1:8081/profile_pic/${req.profile_pic}`
+                                  : "/default-profile.png"
+                              }
+                              alt={req.username}
+                              className="rounded-circle border border-2 border-warning me-3"
+                              style={{
+                                width: "50px",
+                                height: "50px",
+                                objectFit: "cover",
+                              }}
+                            />
+                            <span className="fw-semibold">{req.username}</span>
+                          </div>
+                          <div className="d-flex gap-2">
+                            <button
+                              className="btn btn-success btn-sm flex-fill shadow-sm"
+                              onClick={() => handleRequestAction(req.id, "approve")}
+                            >
+                              <i className="bi bi-check-circle me-1"></i>Accept
+                            </button>
+                            <button
+                              className="btn btn-danger btn-sm flex-fill shadow-sm"
+                              onClick={() => handleRequestAction(req.id, "reject")}
+                            >
+                              <i className="bi bi-x-circle me-1"></i>Decline
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                  {hasMoreFollowing && (
-                    <button 
-                      className="btn btn-primary btn-sm mt-2" 
-                      onClick={() => fetchFollowing(followingPage + 1)}
-                      disabled={loadingFollowing}
-                    >
-                      Load More
-                    </button>
                   )}
-                </>
-              )}
+                </div>
+              </div>
             </div>
           )}
         </div>
-
-        {isOwner && profile.accountType?.toLowerCase() === "private" && (
-          <div className="col-md-4">
-            <div
-              className="card shadow-sm p-3 mb-4"
-              style={{ maxHeight: "600px", overflowY: "auto" }}
-            >
-              <h5>Pending Requests ({pendingRequests.length})</h5>
-              {pendingRequests.length === 0 ? (
-                <p className="mt-2">No pending requests.</p>
-              ) : (
-                pendingRequests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="d-flex justify-content-between align-items-center mb-2 p-2 border rounded"
-                  >
-                    <div className="d-flex align-items-center">
-                      <img
-                        src={
-                          req.profile_pic
-                            ? `http://localhost:5000/profile_pic/${req.profile_pic}`
-                            : "/default-profile.png"
-                        }
-                        alt={req.username}
-                        className="rounded-circle me-3"
-                        style={{ width: "50px", height: "50px", objectFit: "cover" }}
-                      />
-                      <span>{req.username}</span>
-                    </div>
-                    <div className="d-flex gap-2">
-                      <button
-                        className="btn btn-success btn-sm"
-                        onClick={() => handleRequestAction(req.id, "approve")}
-                      >
-                        Accept
-                      </button>
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => handleRequestAction(req.id, "reject")}
-                      >
-                        Decline
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

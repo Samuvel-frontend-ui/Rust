@@ -1,7 +1,8 @@
 use actix_multipart::Multipart;
 use actix_web::{web, HttpResponse, HttpRequest, HttpMessage, Responder, Error};
 use diesel::prelude::*;
-use serde::Deserialize;
+use diesel::associations::HasTable;
+use serde::{Serialize, Deserialize};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use jsonwebtoken::{encode, Header, EncodingKey};
 use lettre::{
@@ -13,14 +14,15 @@ use futures_util::StreamExt;
 use std::io::Write;
 use uuid::Uuid;
 use serde_json::json;
-use chrono::{Utc, Duration};
+use chrono::{NaiveDateTime, Utc, Duration};
 
 use crate::db::DbPool;
 use crate::models::user::{
     User, NewUser, LoginRequest, ForgotPasswordRequest, ResetPasswordRequest, Claims, PasswordResetToken, 
-    UserListItem, Follow, NewFollow, UserProfile, UserUpdate, ProfileUpdateBody,
+    UserListItem, Follow, NewFollow, UserProfile, UserUpdate, UserUpdateRequest, 
 };
 
+use crate::schema::{follows};
 use crate::schema::users::dsl::{users, id, name, email, account_type, phoneno, address};
 use crate::schema::users::dsl::*;
 // use crate::schema::password_reset_tokens::dsl as reset_dsl;
@@ -434,19 +436,23 @@ pub async fn following(pool: web::Data<DbPool>, path: web::Path<String>) -> Resu
     })))
 }
 
-pub async fn profile_get(pool: web::Data<DbPool>,user_id_str: web::Path<String>,) -> Result<HttpResponse, Error> {
-   
-    let user_id_str = user_id_str.into_inner();
-    let uid = match Uuid::parse_str(&user_id_str) {
-        Ok(u) => u,
-        Err(_) => {
-            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-                "message": "Invalid user id"
-            })));
-        }
-    };
+
+pub async fn profile_get(pool: web::Data<DbPool>,req: HttpRequest,) -> Result<HttpResponse, Error> {
+    let extensions = req.extensions();
+    let user = match extensions.get::<User>() {
+    Some(u) => u,
+    None => {
+        return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "message": "Unauthorized"
+        })));
+    }
+      };
+
+    let uid = user.id;
 
     let mut conn = pool.get().unwrap();
+
+    // ✅ 2. Fetch profile details
     let user_opt = users
         .filter(id.eq(uid))
         .select(UserProfile::as_select())
@@ -461,6 +467,8 @@ pub async fn profile_get(pool: web::Data<DbPool>,user_id_str: web::Path<String>,
     }
 
     let user = user_opt.unwrap();
+
+    // ✅ 3. Count followers & following
     let followers_cnt: i64 = crate::schema::follows::dsl::follows
         .filter(crate::schema::follows::dsl::target_id.eq(uid))
         .filter(crate::schema::follows::dsl::status.eq("accepted"))
@@ -490,144 +498,277 @@ pub async fn profile_get(pool: web::Data<DbPool>,user_id_str: web::Path<String>,
 
 pub async fn profile_update(
     pool: web::Data<DbPool>,
-    path: web::Path<String>,
-    body: web::Json<ProfileUpdateBody>,
-) -> Result<HttpResponse, Error> {
-    let user_id_str = path.into_inner();
+    path: web::Path<Uuid>,
+    body: web::Json<UserUpdateRequest>,) -> Result<HttpResponse, Error> 
+    {
+    let user_id = path.into_inner();
+    let body = body.into_inner();
 
-    // ensure user is updating their own profile
-    if user_id_str != body.id {
-        return Ok(HttpResponse::Forbidden().json(serde_json::json!({
-            "message": "You can only update your own profile"
+    if let Some(logged_in_id) = body.loggedInUserId {
+        if logged_in_id != user_id {
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "message": "Unauthorized to update this profile"
+            })));
+        }
+    } else {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "message": "Missing loggedInUserId"
         })));
     }
 
-    let uid = match Uuid::parse_str(&user_id_str) {
-        Ok(u) => u,
-        Err(_) => {
-            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-                "message": "Invalid user id"
-            })));
+    let mut conn = pool.get().unwrap();
+
+    let result = diesel::update(users.filter(id.eq(user_id)))
+        .set((
+            id.eq(body.loggedInUserId.unwrap_or_default()),
+            name.eq(body.username.unwrap_or_default()),
+            email.eq(body.email.unwrap_or_default()),
+            account_type.eq(body.accountType.unwrap_or_else(|| "public".to_string())),
+            phoneno.eq(body.phoneNo.unwrap_or_default()),
+            address.eq(body.address.unwrap_or_default()),
+        ))
+        .get_result::<User>(&mut conn);
+
+    // ✅ 4. Return response
+    match result {
+        Ok(updated_user) => Ok(HttpResponse::Ok().json(serde_json::json!({
+            "id": updated_user.id,
+            "username": updated_user.name,
+            "email": updated_user.email,
+            "accountType": updated_user.account_type,
+            "phoneNo": updated_user.phoneno,
+            "address": updated_user.address,
+        }))),
+        Err(e) => {
+            println!("❌ Diesel update error: {:?}", e);
+            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "message": "Failed to update profile"
+            })))
         }
-    };
-
-    let mut conn = pool.get().expect("Failed to get DB connection");
-
-    // Prepare update payload
-    let update_data = UserUpdate {
-        name: body.name.clone(),
-        email: body.email.clone(),
-        address: body.address.clone(),
-        account_type: body.account_type.clone(),
-        phoneno: body.phoneno.clone(),
-    };
-
-    // Perform update
-    let updated_user = diesel::update(users.filter(id.eq(uid)))
-        .set(&update_data)
-        .get_result::<User>(&mut conn)
-        .optional()
-        .map_err(|e| {
-            eprintln!("DB update error: {:?}", e);
-            actix_web::error::ErrorInternalServerError("Database error")
-        })?;
-
-    if let Some(u) = updated_user {
-        Ok(HttpResponse::Ok().json(serde_json::json!({
-            "id": u.id,
-            "username": u.name,
-            "email": u.email,
-            "profile_pic": u.profile_pic,
-            "accountType": u.account_type,
-            "phoneNo": u.phoneno,
-            "address": u.address
-        })))
-    } else {
-        Ok(HttpResponse::NotFound().json(serde_json::json!({
-            "message": "User not found"
-        })))
     }
 }
 
+#[derive(Queryable, Serialize)]
+pub struct FollowerInfo {
+    pub user_id: Uuid,
+    pub name: String,
+    pub profile_pic: Option<String>,
+}
 
+pub async fn followers_list(
+    pool: web::Data<DbPool>,
+    user_id_path: web::Path<Uuid>,
+    query: web::Query<PaginationParams>,) -> Result<HttpResponse, Error> {
+    use crate::schema::follows::dsl::{follows, user_id as f_user_id, target_id, status};
+    use crate::schema::users::dsl::{users, id as u_id, name as username, profile_pic};
 
+    let target_id_val = user_id_path.into_inner();
+    let page = query.page.unwrap_or(1);
+    let limit_val = query.limit.unwrap_or(3);
+    let offset_val = (page - 1) * limit_val;
 
-// pub async fn followers_list(pool: web::Data<DbPool>, web::Path(user_id_str): web::Path<String>, web::Query(info): web::Query<std::collections::HashMap<String,String>>) -> Result<HttpResponse, Error> {
-//     let page: i64 = info.get("page").and_then(|s| s.parse().ok()).unwrap_or(1);
-//     let limit: i64 = info.get("limit").and_then(|s| s.parse().ok()).unwrap_or(3);
-//     let offset = (page -1) * limit;
+    let pool = pool.clone();
 
-//     let conn = pool.get().unwrap();
-//     let uid = match Uuid::parse_str(&user_id_str) {
-//         Ok(u) => u,
-//         Err(_) => return Ok(HttpResponse::BadRequest().json(serde_json::json!({"message":"Invalid user id"}))),
-//     };
+    let results = web::block(move || {
+        let mut conn = pool.get().expect("Couldn't get DB connection");
 
-//     let rows = diesel::sql_query("SELECT u.id,u.name AS username,u.profile_pic FROM follows f JOIN users u ON f.user_id = u.id WHERE f.target_id = $1 AND f.status='accepted' ORDER BY u.id ASC LIMIT $2 OFFSET $3")
-//         .bind::<diesel::sql_types::Uuid,_>(uid)
-//         .bind::<diesel::sql_types::BigInt,_>(limit)
-//         .bind::<diesel::sql_types::BigInt,_>(offset)
-//         .load::<(uuid::Uuid,String,Option<String>)>(&conn)
-//         .unwrap_or_default();
+        users
+            .inner_join(follows.on(f_user_id.eq(u_id)))
+            .filter(target_id.eq(target_id_val))
+            .filter(status.eq("accepted"))
+            .select((u_id, username, profile_pic))
+            .order(u_id.asc())
+            .limit(limit_val)
+            .offset(offset_val)
+            .load::<FollowerInfo>(&mut conn)
+    })
+    .await
+    .map_err(|e| {
+        eprintln!("Blocking error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Blocking thread error")
+    })?
+    .map_err(|e| {
+        eprintln!("Diesel query error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Database query error")
+    })?;
 
-//     Ok(HttpResponse::Ok().json(serde_json::json!({"page": page, "limit": limit, "followers": rows})))
-// }
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "page": page,
+        "limit": limit_val,
+        "followers": results
+    })))
+}
+        
+pub async fn following_list(
+    pool: web::Data<DbPool>,
+    user_id_path: web::Path<Uuid>,
+    query: web::Query<PaginationParams>,) -> Result<HttpResponse, Error> {
+    use crate::schema::follows::dsl::{follows, user_id as f_user_id, target_id, status};
+    use crate::schema::users::dsl::{users, id as u_id, name as username, profile_pic};
 
-// pub async fn following_list(pool: web::Data<DbPool>, web::Path(user_id_str): web::Path<String>, web::Query(info): web::Query<std::collections::HashMap<String,String>>) -> Result<HttpResponse, Error> {
-//     let page: i64 = info.get("page").and_then(|s| s.parse().ok()).unwrap_or(1);
-//     let limit: i64 = info.get("limit").and_then(|s| s.parse().ok()).unwrap_or(3);
-//     let offset = (page -1) * limit;
+    let user_id_val = user_id_path.into_inner();
+    let page = query.page.unwrap_or(1);
+    let limit_val = query.limit.unwrap_or(3);
+    let offset_val = (page - 1) * limit_val;
 
-//     let conn = pool.get().unwrap();
-//     let uid = match Uuid::parse_str(&user_id_str) {
-//         Ok(u) => u,
-//         Err(_) => return Ok(HttpResponse::BadRequest().json(serde_json::json!({"message":"Invalid user id"}))),
-//     };
+    let pool = pool.clone();
 
-//     let rows = diesel::sql_query("SELECT u.id,u.name AS username,u.profile_pic FROM follows f JOIN users u ON f.target_id = u.id WHERE f.user_id = $1 AND f.status='accepted' ORDER BY u.id ASC LIMIT $2 OFFSET $3")
-//         .bind::<diesel::sql_types::Uuid,_>(uid)
-//         .bind::<diesel::sql_types::BigInt,_>(limit)
-//         .bind::<diesel::sql_types::BigInt,_>(offset)
-//         .load::<(uuid::Uuid,String,Option<String>)>(&conn)
-//         .unwrap_or_default();
+    let results = web::block(move || {
+        let mut conn = pool.get().expect("Couldn't get DB connection");
 
-//     Ok(HttpResponse::Ok().json(serde_json::json!({"page": page, "limit": limit, "following": rows})))
-// }
+        users
+            .inner_join(follows.on(target_id.eq(u_id)))
+            .filter(f_user_id.eq(user_id_val))
+            .filter(status.eq("accepted"))
+            .select((u_id, username, profile_pic))
+            .order(u_id.asc())
+            .limit(limit_val)
+            .offset(offset_val)
+            .load::<FollowerInfo>(&mut conn)
+    })
+    .await
+    .map_err(|e| {
+        eprintln!("Blocking error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Blocking thread error")
+    })?
+    .map_err(|e| {
+        eprintln!("Diesel query error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Database query error")
+    })?;
 
-// pub async fn follow_requests(pool: web::Data<DbPool>, web::Path(user_id_str): web::Path<String>) -> Result<HttpResponse, Error> {
-//     let conn = pool.get().unwrap();
-//     let uid = match Uuid::parse_str(&user_id_str) {
-//         Ok(u) => u,
-//         Err(_) => return Ok(HttpResponse::BadRequest().json(serde_json::json!({"message":"Invalid user id"}))),
-//     };
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "page": page,
+        "limit": limit_val,
+        "following": results
+    })))
+}
 
-//     let rows = diesel::sql_query("SELECT f.id, f.user_id AS requesterId, u.name AS username, u.profile_pic FROM follows f JOIN users u ON f.user_id=u.id WHERE f.target_id=$1 AND f.status='pending' ORDER BY f.created_at ASC")
-//         .bind::<diesel::sql_types::Uuid,_>(uid)
-//         .load::<(i32,uuid::Uuid,String,Option<String>)>(&conn)
-//         .unwrap_or_default();
+#[derive(Queryable, Serialize, Identifiable)]
+#[diesel(table_name = follows)]
+#[diesel(primary_key(id))]
+pub struct Followreq {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub target_id: Uuid,
+    pub status: String,
+    pub created_at: NaiveDateTime,
+}
 
-//     Ok(HttpResponse::Ok().json(serde_json::json!({"pendingRequests": rows})))
-// }
+#[derive(Serialize)]
+pub struct PendingRequest {
+    pub id: Uuid,
+    pub requester_id: Uuid,
+    pub username: String,
+    pub profile_pic: Option<String>,
+}
 
-// #[derive(Deserialize)]
-// pub struct HandleReqBody { pub action: String }
+#[derive(Deserialize)]
+pub struct HandleFollowRequest {
+    pub action: String, // "approve" or "reject"
+}
 
-// pub async fn handle_follow_request(pool: web::Data<DbPool>, web::Path(request_id): web::Path<i32>, body: web::Json<HandleReqBody>, req: actix_web::HttpRequest) -> Result<HttpResponse, Error> {
-//     let owner: Option<&User> = req.extensions().get::<User>();
-//     if owner.is_none() { return Ok(HttpResponse::Unauthorized().json(serde_json::json!({"message":"Unauthorized"}))); }
-//     let owner_id = owner.unwrap().id;
+pub async fn follow_requests(
+    pool: web::Data<DbPool>,
+    path: web::Path<Uuid>,
+) -> Result<HttpResponse, Error> {
+    let target_id_val = path.into_inner();
+    let pool = pool.clone();
 
-//     if !["approve","reject"].contains(&body.action.as_str()) { return Ok(HttpResponse::BadRequest().json(serde_json::json!({"message":"Invalid request"}))); }
-//     let status_to = if body.action == "approve" { "accepted" } else { "rejected" };
+    let result: Vec<PendingRequest> = web::block(move || {
+        use crate::schema::follows::dsl::*;
+        use crate::schema::users::dsl::{users as u_table, id as u_id, name as u_name, profile_pic as u_pic};
 
-//     let conn = pool.get().unwrap();
-//     let updated = diesel::update(crate::schema::follows::dsl::follows.filter(crate::schema::follows::dsl::id.eq(request_id)).filter(crate::schema::follows::dsl::target_id.eq(owner_id)))
-//         .set((crate::schema::follows::dsl::status.eq(status_to), crate::schema::follows::dsl::created_at.eq(Utc::now())))
-//         .get_result::<Follow>(&conn)
-//         .optional()
-//         .unwrap();
+        let mut conn = pool.get().expect("DB connection failed");
 
-//     if updated.is_none() { return Ok(HttpResponse::NotFound().json(serde_json::json!({"message":"Follow request not found"}))); }
+        let rows = follows
+            .inner_join(u_table.on(user_id.eq(u_id)))
+            .filter(target_id.eq(target_id_val))
+            .filter(status.eq("pending"))
+            .order(created_at.asc())
+            .select((id, user_id, u_name, u_pic))
+            .load::<(Uuid, Uuid, String, Option<String>)>(&mut conn)?;
 
-//     Ok(HttpResponse::Ok().json(serde_json::json!({"message": if body.action=="approve" {"Request approved"} else {"Request rejected"}})))
-// }                        
+        let mapped: Vec<PendingRequest> = rows
+            .into_iter()
+            .map(|(fid, requester_id, username, prof_pic)| PendingRequest {
+                id: fid,
+                requester_id,
+                username,
+                profile_pic: prof_pic,
+            })
+            .collect();
+
+        Ok::<Vec<PendingRequest>, diesel::result::Error>(mapped)
+    })
+    .await
+    .map_err(|e| {
+        log::error!("Pending requests error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Database error")
+    })?
+    .map_err(|e| {
+        log::error!("Database query error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Database query failed")
+    })?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "pendingRequests": result
+    })))
+}
+
+pub async fn handle_follow_request(
+    pool: web::Data<DbPool>,
+    req: HttpRequest,
+    path: web::Path<Uuid>, 
+    body: web::Json<HandleFollowRequest>,
+) -> Result<HttpResponse, Error> {
+    let request_id = path.into_inner();
+    let action = body.action.to_lowercase();
+
+    // Extract user info from extensions
+    let extensions = req.extensions();
+    let user = match extensions.get::<FollowerInfo>() {
+        Some(u) => u,
+        None => {
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "message": "Unauthorized"
+            })));
+        }
+    };
+    let owner_id = user.user_id;
+
+    if !["approve", "reject"].contains(&action.as_str()) {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "message": "Invalid action"
+        })));
+    }
+
+    let new_status = if action == "approve" { "accepted" } else { "rejected" };
+    let pool = pool.clone();
+
+    let update_result: usize = web::block(move || {
+        use crate::schema::follows::dsl::*;
+        let mut conn = pool.get().expect("DB connection failed");
+
+        diesel::update(follows.filter(id.eq(request_id)).filter(target_id.eq(owner_id)))
+            .set(status.eq(new_status))
+            .execute(&mut conn)
+    })
+    .await
+    .map_err(|e| {
+        log::error!("Handle follow request error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Database error")
+    })?
+    .map_err(|e| {
+        log::error!("Database update error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Database update failed")
+    })?;
+
+    if update_result > 0 {
+        let msg = if action == "approve" { "Request approved" } else { "Request rejected" };
+        Ok(HttpResponse::Ok().json(serde_json::json!({ "message": msg })))
+    } else {
+        Ok(HttpResponse::NotFound().json(serde_json::json!({
+            "message": "Follow request not found"
+        })))
+    }
+}

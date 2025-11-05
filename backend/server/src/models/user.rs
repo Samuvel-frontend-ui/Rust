@@ -11,7 +11,7 @@ pub struct User {
     pub name: String,
     pub email: String,
     pub password: String,
-    pub address: String,
+    pub address: Option<String>,
     pub phoneno: String,
     pub account_type: String,
     pub profile_pic: Option<String>,
@@ -105,7 +105,7 @@ pub struct UserProfile {
     pub profile_pic: Option<String>,
     pub account_type: String,
     pub phoneno: String,
-    pub address: String,
+    pub address: Option<String>,
 }
 
 #[derive(AsChangeset)]
@@ -118,12 +118,13 @@ pub struct UserUpdate {
     pub phoneno: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
-pub struct ProfileUpdateBody {
-    pub id: String,
-    pub name: String,
-    pub email: String,
-    pub account_type: Option<String>,
-    pub phoneno: Option<String>,
-    pub address: String,
+#[derive(Deserialize)]
+pub struct UserUpdateRequest {
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub accountType: Option<String>,
+    pub phoneNo: Option<String>,
+    pub address: Option<String>,
+    pub loggedInUserId: Option<Uuid>,
 }
+
