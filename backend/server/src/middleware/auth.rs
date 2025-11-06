@@ -109,10 +109,8 @@ where
                 .first::<User>(&mut conn)
                 .map_err(|_| ErrorUnauthorized("User not found"))?;
 
-            // 📦 Store user in request extensions
-            req.extensions_mut().insert(user);
+            req.extensions_mut().insert(user);   
 
-            // ✅ Continue request processing
             let res = srv.call(req).await?;
             Ok(res)
         }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import axios from "axios";
+import { toaster } from "../Globaltoaster";  
 
 function ForgotPassword() {
   const [email, setEmail] = useState("");
@@ -15,11 +16,11 @@ function ForgotPassword() {
       const res = await axios.post("http://127.0.0.1:8081/api/user/forgot-password", { email });
       setMessage(res.data.message); 
     } catch (err) {
-      // if backend responds with "user not found"
+ 
       if (err.response?.status === 400) {
-        setError("No user found with this email");
+        toaster.error("No user found with this email");
       } else {
-        setError(err.response?.data?.message || "Something went wrong");
+        toaster.error(err.response?.data?.message || "Something went wrong");
       }
     }
   };

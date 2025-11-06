@@ -2,6 +2,7 @@ import React, { useEffect, useState, useContext, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { AuthContext } from "../authcontext.jsx";
+import { toaster } from "../Globaltoaster.jsx";
 
 function Home() {
   const navigate = useNavigate();
@@ -10,7 +11,6 @@ function Home() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState("");
   const [following, setFollowing] = useState([]);
   const [pendingRequests, setPendingRequests] = useState([]);
   const [buttonLoading, setButtonLoading] = useState({});
@@ -26,7 +26,6 @@ function Home() {
     navigate("/register");
   };
 
-  // 🔹 Go to Profile
   const handleProfileClick = () => {
     if (user?.id) {
       navigate(`/profile/${user.id}`);
@@ -35,7 +34,6 @@ function Home() {
     }
   };
 
-  // 🔹 Go to Post Upload
   const handlePostClick = () => {
     if (user?.id) {
       navigate("/getpost");
@@ -44,7 +42,6 @@ function Home() {
     }
   };
 
-  // 🔹 Fetch users (with pagination)
   const fetchUsersChunk = async (currentOffset = offset) => {
     if (!user?.id || !hasMore) return;
     try {
@@ -52,7 +49,6 @@ function Home() {
       const token = localStorage.getItem("token");
       const page = Math.floor(currentOffset / usersPerChunk) + 1;
 
-      // Fetch user list
       const res = await axios.get(
         `http://127.0.0.1:8081/api/user/auth/get-users?page=${page}&limit=${usersPerChunk}`,
         { headers: { Authorization: `Bearer ${token}` } }
@@ -60,7 +56,6 @@ function Home() {
 
       const fetchedUsers = res.data.users || [];
 
-      // Avoid duplicates
       setUsers((prev) => {
         const combined = [...prev, ...fetchedUsers];
         return Array.from(new Map(combined.map((u) => [u.id, u])).values());
@@ -69,7 +64,6 @@ function Home() {
       setOffset((prev) => prev + fetchedUsers.length);
       if (fetchedUsers.length < usersPerChunk) setHasMore(false);
 
-      // 🔹 Fetch following + pendingRequests (first load only)
       if (currentOffset === 0) {
         const followRes = await axios.get(
           `http://127.0.0.1:8081/api/user/auth/request/${user.id}`,
@@ -80,16 +74,15 @@ function Home() {
       }
     } catch (err) {
       console.error("Error fetching users:", err);
-      setError("Failed to load request server");
+      toaster.error("Failed to load request server");
     } finally {
       setLoading(false);
       setLoadingMore(false);
     }
   };
 
-  // 🔹 Follow / Unfollow Logic
   const handleFollowToggle = async (targetUser) => {
-    // Prevent multiple clicks
+   
     if (buttonLoading[targetUser.id]) return;
 
     setButtonLoading((prev) => ({ ...prev, [targetUser.id]: true }));
@@ -153,7 +146,7 @@ function Home() {
         } catch (err) {
           console.error("Error refreshing follow data:", err);
         }
-      }, 5000); // refresh every 5 seconds
+      }, 5000); 
 
       return () => clearInterval(interval);
     }
@@ -190,7 +183,7 @@ function Home() {
       <h4 className="mb-3 text-center text-secondary">👥 Explore Users</h4>
 
       {loading && <p className="text-center text-muted">Loading users...</p>}
-      {error && <p className="text-danger text-center">{error}</p>}
+     
 
       <div className="row g-3">
         {users.map((u) => (

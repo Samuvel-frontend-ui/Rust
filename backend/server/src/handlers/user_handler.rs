@@ -1,5 +1,6 @@
 use actix_multipart::Multipart;
 use actix_web::{web, HttpResponse, HttpRequest, HttpMessage, Responder, Error};
+use utoipa::path;
 use diesel::prelude::*;
 use diesel::associations::HasTable;
 use serde::{Serialize, Deserialize};
@@ -19,13 +20,24 @@ use chrono::{NaiveDateTime, Utc, Duration};
 use crate::db::DbPool;
 use crate::models::user::{
     User, NewUser, LoginRequest, ForgotPasswordRequest, ResetPasswordRequest, Claims, PasswordResetToken, 
-    UserListItem, Follow, NewFollow, UserProfile, UserUpdate, UserUpdateRequest, 
+    UserListItem, Follow, NewFollow, UserProfile, UserUpdate, UserUpdateRequest, PaginationParams, FollowBody,
+    PendingRequest, HandleFollowRequest, FollowerInfo, Followreq 
 };
 
 use crate::schema::{follows};
 use crate::schema::users::dsl::{users, id, name, email, account_type, phoneno, address};
 use crate::schema::users::dsl::*;
 // use crate::schema::password_reset_tokens::dsl as reset_dsl;
+
+#[utoipa::path(
+    post,
+    path = "api/user/register",
+    request_body = NewUser,
+    responses(
+        (status = 200, description = "User registered successfully"),
+        (status = 400, description = "Invalid input")
+    )
+)]
 
 pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> impl Responder {
     let mut user_name = String::new();
@@ -131,7 +143,6 @@ pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> i
     };
 
     let new_user = NewUser {
-        id: Uuid::new_v4(),
         name: user_name,
         email: user_email.clone(),
         password: hashed,
@@ -151,6 +162,17 @@ pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> i
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "api/user/login",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Login successful", body = serde_json::Value),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+
 pub async fn login(pool: web::Data<DbPool>, data: web::Json<LoginRequest>) -> impl Responder {
     let mut conn = match pool.get() {
         Ok(c) => c,
@@ -161,7 +183,6 @@ pub async fn login(pool: web::Data<DbPool>, data: web::Json<LoginRequest>) -> im
 
     match result {
         Ok(user) => {
-            // Safe password check
             let is_valid = verify(&data.password, &user.password).unwrap_or(false);
 
             if !is_valid {
@@ -170,7 +191,7 @@ pub async fn login(pool: web::Data<DbPool>, data: web::Json<LoginRequest>) -> im
                 }));
             }
 
-            // Safe JWT creation
+    
             let expiration = Utc::now()
                 .checked_add_signed(Duration::hours(24))
                 .expect("valid timestamp")
@@ -205,6 +226,22 @@ pub async fn login(pool: web::Data<DbPool>, data: web::Json<LoginRequest>) -> im
         })),
     }
 }
+
+#[utoipa::path(
+    post,
+    path = "api/user/forgot-password",
+    request_body(
+        content = ForgotPasswordRequest,
+        description = "Email of the user requesting a password reset",
+        content_type = "application/json"
+    ),
+    responses(
+        (status = 200, description = "Reset link sent successfully", body = serde_json::Value),
+        (status = 400, description = "Invalid user email", body = serde_json::Value),
+        (status = 500, description = "Email sending failed or database error", body = serde_json::Value)
+    ),
+    tag = "User"
+)]
 
 pub async fn forgot_password(pool: web::Data<DbPool>,body: web::Json<ForgotPasswordRequest>,) -> impl Responder {
     let conn = &mut pool.get().unwrap();
@@ -261,6 +298,22 @@ pub async fn forgot_password(pool: web::Data<DbPool>,body: web::Json<ForgotPassw
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/user/reset-password",
+    request_body(
+        content = ResetPasswordRequest,
+        description = "Token and new password for resetting the user's password",
+        content_type = "application/json"
+    ),
+    responses(
+        (status = 200, description = "Password reset successful", body = serde_json::Value),
+        (status = 400, description = "Token expired or invalid", body = serde_json::Value),
+        (status = 500, description = "Database error or password hashing failed", body = serde_json::Value)
+    ),
+    tag = "User"
+)]
+
 pub async fn reset_password(pool: web::Data<DbPool>,body: web::Json<ResetPasswordRequest>,) -> impl Responder {
     use crate::schema::{users::dsl as u, password_reset_tokens::dsl as t};
 
@@ -301,11 +354,19 @@ pub async fn reset_password(pool: web::Data<DbPool>,body: web::Json<ResetPasswor
     }
 }
 
-#[derive(Deserialize)]
-pub struct PaginationParams {
-    pub page: Option<i64>,
-    pub limit: Option<i64>,
-}
+#[utoipa::path(
+    get,
+    path = "api/user/auth/get-users",
+    params(
+        PaginationParams
+    ),
+    responses(
+        (status = 200, description = "List of users with pagination", body = serde_json::Value),
+        (status = 401, description = "Unauthorized", body = serde_json::Value),
+        (status = 500, description = "Database error", body = serde_json::Value)
+    ),
+    tag = "User"
+)]
 
 pub async fn get_users(pool: web::Data<DbPool>,req: HttpRequest,query: web::Query<PaginationParams>,) -> Result<HttpResponse, Error> {
     let extensions = req.extensions();
@@ -341,34 +402,55 @@ pub async fn get_users(pool: web::Data<DbPool>,req: HttpRequest,query: web::Quer
     })))
 }
 
- #[derive(Deserialize)]
-pub struct FollowBody {
-    pub userId: String,
-    pub targetId: String,
-    pub action: String,
-    pub isRequest: Option<bool>,
-}
+#[utoipa::path(
+    post,
+    path = "api/user/auth/follow",
+    request_body = FollowBody,
+    responses(
+        (status = 200, description = "Follow action processed successfully", body = serde_json::Value),
+        (status = 400, description = "Bad request, invalid or missing fields", body = serde_json::Value),
+        (status = 500, description = "Database error", body = serde_json::Value)
+    ),
+    tag = "User"
+)]
 
-pub async fn follow_button(pool: web::Data<DbPool>, body: web::Json<FollowBody>) -> Result<HttpResponse, Error> {
+pub async fn follow_button(pool: web::Data<DbPool>,body: web::Json<FollowBody>,) -> Result<HttpResponse, Error> {
+    use crate::schema::follows::dsl::*;
+    use chrono::Utc;
+    use diesel::prelude::*;
+
     let mut conn = pool.get().unwrap();
 
     let uid = match Uuid::parse_str(&body.userId) {
         Ok(u) => u,
-        Err(_) => return Ok(HttpResponse::BadRequest().json(json!({"success": false, "message": "Invalid userId"}))),
+        Err(_) => {
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "success": false,
+                "message": "Invalid userId"
+            })))
+        }
     };
+
     let tid = match Uuid::parse_str(&body.targetId) {
         Ok(t) => t,
-        Err(_) => return Ok(HttpResponse::BadRequest().json(json!({"success": false, "message": "Invalid targetId"}))),
+        Err(_) => {
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "success": false,
+                "message": "Invalid targetId"
+            })))
+        }
     };
 
-    if body.action.is_empty() {
-        return Ok(HttpResponse::BadRequest().json(json!({"success": false, "message": "Missing or invalid fields"})));
+    if body.action.trim().is_empty() {
+        return Ok(HttpResponse::BadRequest().json(json!({
+            "success": false,
+            "message": "Missing or invalid fields"
+        })));
     }
 
-    use crate::schema::follows::dsl::*;
-    use chrono::Utc;
-
-    let rejected = follows.filter(user_id.eq(uid))
+    // 🧱 Handle rejected follow resend
+    let rejected = follows
+        .filter(user_id.eq(uid))
         .filter(target_id.eq(tid))
         .filter(status.eq("rejected"))
         .first::<Follow>(&mut conn)
@@ -380,17 +462,43 @@ pub async fn follow_button(pool: web::Data<DbPool>, body: web::Json<FollowBody>)
             .set((status.eq("pending"), created_at.eq(Utc::now().naive_utc())))
             .execute(&mut conn)
             .unwrap();
-        return Ok(HttpResponse::Ok().json(json!({"success": true, "message": "Follow request sent again", "status": "pending"})));
+
+        return Ok(HttpResponse::Ok().json(json!({
+            "success": true,
+            "message": "Follow request sent again",
+            "status": "pending"
+        })));
     }
 
     if body.action == "unfollow" {
-        diesel::delete(follows.filter(user_id.eq(uid)).filter(target_id.eq(tid)))
-            .execute(&mut conn)
-            .unwrap();
-        return Ok(HttpResponse::Ok().json(json!({"success": true, "message": "Unfollowed / Request cancelled"})));
+        let deleted_count = diesel::delete(
+            follows
+                .filter(user_id.eq(uid))
+                .filter(target_id.eq(tid)),
+        )
+        .execute(&mut conn)
+        .unwrap();
+
+        if deleted_count == 0 {
+            return Ok(HttpResponse::Ok().json(json!({
+                "success": false,
+                "message": "No follow relationship found"
+            })));
+        }
+
+        return Ok(HttpResponse::Ok().json(json!({
+            "success": true,
+            "message": "Unfollowed successfully",
+            "deleted_count": deleted_count
+        })));
     }
 
-    let status_val = if body.isRequest.unwrap_or(false) { "pending" } else { "accepted" };
+    // 🟢 Handle follow or follow-request
+    let status_val = if body.isRequest.unwrap_or(false) {
+        "pending"
+    } else {
+        "accepted"
+    };
 
     let new_follow = NewFollow {
         user_id: uid,
@@ -406,11 +514,40 @@ pub async fn follow_button(pool: web::Data<DbPool>, body: web::Json<FollowBody>)
         .unwrap();
 
     if insert_res == 0 {
-        return Ok(HttpResponse::Ok().json(json!({"success": false, "message": if body.isRequest.unwrap_or(false) { "Request already sent" } else { "Already following" } })));
+        return Ok(HttpResponse::Ok().json(json!({
+            "success": false,
+            "message": if body.isRequest.unwrap_or(false) {
+                "Follow request already sent"
+            } else {
+                "Already following this user"
+            }
+        })));
     }
 
-    Ok(HttpResponse::Ok().json(json!({"success": true, "message": if body.isRequest.unwrap_or(false) { "Follow request sent" } else { "Now following" }, "status": status_val})))
+    Ok(HttpResponse::Ok().json(json!({
+        "success": true,
+        "message": if body.isRequest.unwrap_or(false) {
+            "Follow request sent"
+        } else {
+            "Now following this user"
+        },
+        "status": status_val
+    })))
 }
+
+#[utoipa::path(
+    get,
+    path = "api/user/auth/following/{user_id}",
+    params(
+        ("user_id" = String, Path, description = "UUID of the user to fetch following list")
+    ),
+    responses(
+        (status = 200, description = "List of users this user is following", body = serde_json::Value),
+        (status = 400, description = "Invalid user ID provided", body = serde_json::Value),
+        (status = 500, description = "Database error", body = serde_json::Value)
+    ),
+    tag = "User"
+)]
 
 pub async fn following(pool: web::Data<DbPool>, path: web::Path<String>) -> Result<HttpResponse, Error> {
     let user_id_str = path.into_inner();
@@ -436,6 +573,19 @@ pub async fn following(pool: web::Data<DbPool>, path: web::Path<String>) -> Resu
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "api/user/auth/profile",
+    responses(
+        (status = 200, description = "Fetch logged-in user's profile", body = serde_json::Value),
+        (status = 401, description = "Unauthorized", body = serde_json::Value),
+        (status = 404, description = "User not found", body = serde_json::Value)
+    ),
+    tag = "User",
+    security(
+        ("bearerAuth" = [])
+    )
+)]
 
 pub async fn profile_get(pool: web::Data<DbPool>,req: HttpRequest,) -> Result<HttpResponse, Error> {
     let extensions = req.extensions();
@@ -496,12 +646,38 @@ pub async fn profile_get(pool: web::Data<DbPool>,req: HttpRequest,) -> Result<Ht
     })))
 }
 
-pub async fn profile_update(
-    pool: web::Data<DbPool>,
-    path: web::Path<Uuid>,
-    body: web::Json<UserUpdateRequest>,) -> Result<HttpResponse, Error> 
+#[utoipa::path(
+    put,
+    path = "api/user/auth/profile",
+    request_body = UserUpdateRequest,
+    responses(
+        (status = 200, description = "Profile updated successfully", body = serde_json::Value),
+        (status = 400, description = "Bad request, e.g., missing loggedInUserId", body = serde_json::Value),
+        (status = 401, description = "Unauthorized to update profile", body = serde_json::Value),
+        (status = 500, description = "Failed to update profile", body = serde_json::Value)
+    ),
+    tag = "User",
+    security(
+        ("bearerAuth" = [])
+    )
+)]
+
+pub async fn profile_update(pool: web::Data<DbPool>,req: HttpRequest,body: web::Json<UserUpdateRequest>,) -> Result<HttpResponse, Error> 
     {
-    let user_id = path.into_inner();
+
+        let extensions = req.extensions();
+    let user = match extensions.get::<User>() {
+    Some(u) => u,
+    None => {
+        return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "message": "Unauthorized"
+        })));
+    }
+      };
+
+    let uid = user.id;
+
+    let user_id = user.id;
     let body = body.into_inner();
 
     if let Some(logged_in_id) = body.loggedInUserId {
@@ -548,21 +724,42 @@ pub async fn profile_update(
     }
 }
 
-#[derive(Queryable, Serialize)]
-pub struct FollowerInfo {
-    pub user_id: Uuid,
-    pub name: String,
-    pub profile_pic: Option<String>,
-}
+#[utoipa::path(
+    get,
+    path = "api/user/auth/followers",
+    params(
+        PaginationParams
+    ),
+    responses(
+        (status = 200, description = "List of followers", body = serde_json::Value),
+        (status = 401, description = "Unauthorized", body = serde_json::Value),
+        (status = 500, description = "Internal server error", body = serde_json::Value)
+    ),
+    tag = "User",
+    security(
+        ("bearerAuth" = [])
+    )
+)]
 
-pub async fn followers_list(
-    pool: web::Data<DbPool>,
-    user_id_path: web::Path<Uuid>,
+pub async fn followers_list(pool: web::Data<DbPool>,req: HttpRequest,
     query: web::Query<PaginationParams>,) -> Result<HttpResponse, Error> {
     use crate::schema::follows::dsl::{follows, user_id as f_user_id, target_id, status};
     use crate::schema::users::dsl::{users, id as u_id, name as username, profile_pic};
 
-    let target_id_val = user_id_path.into_inner();
+ let extensions = req.extensions();
+    let user = match extensions.get::<User>() {
+    Some(u) => u,
+    None => {
+        return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "message": "Unauthorized"
+        })));
+    }
+      };
+
+    let uid = user.id;
+
+
+    let target_id_val = user.id;
     let page = query.page.unwrap_or(1);
     let limit_val = query.limit.unwrap_or(3);
     let offset_val = (page - 1) * limit_val;
@@ -598,15 +795,44 @@ pub async fn followers_list(
         "followers": results
     })))
 }
+
+#[utoipa::path(
+    get,
+    path = "api/user/auth/following",
+    params(
+        PaginationParams
+    ),
+    responses(
+        (status = 200, description = "List of users the current user is following", body = serde_json::Value),
+        (status = 401, description = "Unauthorized", body = serde_json::Value),
+        (status = 500, description = "Internal server error", body = serde_json::Value)
+    ),
+    tag = "User",
+    security(
+        ("bearerAuth" = [])
+    )
+)]
         
-pub async fn following_list(
-    pool: web::Data<DbPool>,
-    user_id_path: web::Path<Uuid>,
+pub async fn following_list(pool: web::Data<DbPool>,req: HttpRequest,
     query: web::Query<PaginationParams>,) -> Result<HttpResponse, Error> {
     use crate::schema::follows::dsl::{follows, user_id as f_user_id, target_id, status};
     use crate::schema::users::dsl::{users, id as u_id, name as username, profile_pic};
 
-    let user_id_val = user_id_path.into_inner();
+
+ let extensions = req.extensions();
+    let user = match extensions.get::<User>() {
+    Some(u) => u,
+    None => {
+        return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "message": "Unauthorized"
+        })));
+    }
+      };
+
+    let uid = user.id;
+
+
+    let user_id_val = user.id;
     let page = query.page.unwrap_or(1);
     let limit_val = query.limit.unwrap_or(3);
     let offset_val = (page - 1) * limit_val;
@@ -643,35 +869,35 @@ pub async fn following_list(
     })))
 }
 
-#[derive(Queryable, Serialize, Identifiable)]
-#[diesel(table_name = follows)]
-#[diesel(primary_key(id))]
-pub struct Followreq {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub target_id: Uuid,
-    pub status: String,
-    pub created_at: NaiveDateTime,
-}
+#[utoipa::path(
+    get,
+    path = "/user/follow-requests",
+    responses(
+        (status = 200, description = "List of pending follow requests", body = serde_json::Value),
+        (status = 401, description = "Unauthorized", body = serde_json::Value),
+        (status = 500, description = "Internal server error", body = serde_json::Value)
+    ),
+    tag = "User",
+    security(
+        ("bearerAuth" = [])
+    )
+)]
 
-#[derive(Serialize)]
-pub struct PendingRequest {
-    pub id: Uuid,
-    pub requester_id: Uuid,
-    pub username: String,
-    pub profile_pic: Option<String>,
-}
+pub async fn follow_requests(pool: web::Data<DbPool>,req: HttpRequest,) -> Result<HttpResponse, Error> {
+ let extensions = req.extensions();
+    let user = match extensions.get::<User>() {
+    Some(u) => u,
+    None => {
+        return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+            "message": "Unauthorized"
+        })));
+    }
+      };
 
-#[derive(Deserialize)]
-pub struct HandleFollowRequest {
-    pub action: String, // "approve" or "reject"
-}
+    let uid = user.id;
 
-pub async fn follow_requests(
-    pool: web::Data<DbPool>,
-    path: web::Path<Uuid>,
-) -> Result<HttpResponse, Error> {
-    let target_id_val = path.into_inner();
+
+    let target_id_val = user.id;
     let pool = pool.clone();
 
     let result: Vec<PendingRequest> = web::block(move || {
@@ -715,43 +941,125 @@ pub async fn follow_requests(
     })))
 }
 
-pub async fn handle_follow_request(
-    pool: web::Data<DbPool>,
-    req: HttpRequest,
+
+#[utoipa::path(
+    put,
+    path = "/user/follow-requests/{id}",
+    request_body(content = HandleFollowRequest, description = "Approve or reject a follow request"),
+    responses(
+        (status = 200, description = "Follow request handled successfully", body = serde_json::Value),
+        (status = 400, description = "Invalid input or action", body = serde_json::Value),
+        (status = 401, description = "Unauthorized", body = serde_json::Value),
+        (status = 404, description = "Follow request not found or already processed", body = serde_json::Value),
+        (status = 500, description = "Internal server error", body = serde_json::Value)
+    ),
+    params(
+        ("id" = Uuid, Path, description = "UUID of the follow request to handle")
+    ),
+    tag = "User",
+    security(
+        ("bearerAuth" = [])
+    )
+)]
+
+pub async fn handle_follow_request(pool: web::Data<DbPool>,req: HttpRequest,
     path: web::Path<Uuid>, 
-    body: web::Json<HandleFollowRequest>,
-) -> Result<HttpResponse, Error> {
+    body: web::Json<HandleFollowRequest>,) -> Result<HttpResponse, Error> {
+    use crate::schema::follows::dsl::*;
+    
     let request_id = path.into_inner();
     let action = body.action.to_lowercase();
 
-    // Extract user info from extensions
-    let extensions = req.extensions();
-    let user = match extensions.get::<FollowerInfo>() {
-        Some(u) => u,
-        None => {
-            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
-                "message": "Unauthorized"
-            })));
-        }
-    };
-    let owner_id = user.user_id;
-
+    // Validate action
     if !["approve", "reject"].contains(&action.as_str()) {
         return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-            "message": "Invalid action"
+            "success": false,
+            "message": "Invalid action. Use 'approve' or 'reject'"
         })));
     }
 
+    // Get owner_id from request body (the user who owns the account)
+    let owner_id = match &body.ownerId {
+        Some(id_str) => {
+            match Uuid::parse_str(id_str) {
+                Ok(uuid) => uuid,
+                Err(_) => {
+                    return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                        "success": false,
+                        "message": "Invalid owner ID format"
+                    })));
+                }
+            }
+        },
+        None => {
+            // Try to get from extensions as fallback
+            let extensions = req.extensions();
+            match extensions.get::<FollowerInfo>() {
+                Some(u) => u.user_id,
+                None => {
+                    return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                        "success": false,
+                        "message": "Unauthorized - no owner ID provided"
+                    })));
+                }
+            }
+        }
+    };
+
+    println!("   Owner ID (target of request): {}", owner_id);
+
     let new_status = if action == "approve" { "accepted" } else { "rejected" };
-    let pool = pool.clone();
+    
+    let pool_clone = pool.clone();
+    let request_id_clone = request_id.clone();
 
+    // First, fetch the follow request to see who sent it
+    let follow_request = web::block(move || {
+        let mut conn = pool_clone.get().expect("DB connection failed");
+        
+        follows
+            .filter(id.eq(request_id_clone))
+            .filter(target_id.eq(owner_id))
+            .filter(status.eq("pending"))
+            .first::<Follow>(&mut conn)
+            .optional()
+    })
+    .await
+    .map_err(|e| {
+        log::error!("Failed to fetch follow request: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Database error")
+    })?
+    .map_err(|e| {
+        log::error!("Database query error: {:?}", e);
+        actix_web::error::ErrorInternalServerError("Database query failed")
+    })?;
+
+    let follow_req = match follow_request {
+        Some(req) => req,
+        None => {
+            println!("❌ Follow request not found or not pending");
+            return Ok(HttpResponse::NotFound().json(serde_json::json!({
+                "success": false,
+                "message": "Follow request not found or already processed"
+            })));
+        }
+    };
+
+    println!("   Requester ID (who sent request): {}", follow_req.user_id);
+
+    // Now update the status
+    let pool_clone = pool.clone();
     let update_result: usize = web::block(move || {
-        use crate::schema::follows::dsl::*;
-        let mut conn = pool.get().expect("DB connection failed");
+        let mut conn = pool_clone.get().expect("DB connection failed");
 
-        diesel::update(follows.filter(id.eq(request_id)).filter(target_id.eq(owner_id)))
-            .set(status.eq(new_status))
-            .execute(&mut conn)
+        diesel::update(
+            follows
+                .filter(id.eq(request_id))
+                .filter(target_id.eq(owner_id))
+                .filter(status.eq("pending"))
+        )
+        .set(status.eq(new_status))
+        .execute(&mut conn)
     })
     .await
     .map_err(|e| {
@@ -763,12 +1071,26 @@ pub async fn handle_follow_request(
         actix_web::error::ErrorInternalServerError("Database update failed")
     })?;
 
+    println!("   Update result: {} rows affected", update_result);
+
     if update_result > 0 {
-        let msg = if action == "approve" { "Request approved" } else { "Request rejected" };
-        Ok(HttpResponse::Ok().json(serde_json::json!({ "message": msg })))
+        let msg = if action == "approve" { 
+            "Follow request approved successfully" 
+        } else { 
+            "Follow request rejected" 
+        };
+        
+        println!("✅ Request {} successfully", action);
+        
+        Ok(HttpResponse::Ok().json(serde_json::json!({ 
+            "success": true,
+            "message": msg 
+        })))
     } else {
+        println!("❌ No rows updated");
         Ok(HttpResponse::NotFound().json(serde_json::json!({
-            "message": "Follow request not found"
+            "success": false,
+            "message": "Follow request not found or already processed"
         })))
     }
 }

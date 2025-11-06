@@ -3,13 +3,13 @@ import { useNavigate } from "react-router-dom";
 import ReactQuill from "react-quill";
 import "react-quill/dist/quill.snow.css";
 import axios from "axios";
+import {toaster} from "../Globaltoaster.jsx";
 
 export default function VideoInput() {
   const navigate = useNavigate();
   const [uploads, setUploads] = useState([]);
   const [description, setDescription] = useState("");
   const [fileList, setFileList] = useState([]);
-  const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
 
   // 📁 Handle File Selection
@@ -24,13 +24,13 @@ export default function VideoInput() {
 
     if (invalidFiles.length > 0) {
       const invalidNames = invalidFiles.map((f) => f.name).join(", ");
-      setError(
-        `❌ Only MP4 files under ${MAX_SIZE_MB}MB are allowed. Invalid: ${invalidNames}`
+      toaster.error(
+        ` Only MP4 files under ${MAX_SIZE_MB}MB are allowed. Invalid: ${invalidNames}`
       );
       return;
     }
 
-    setError("");
+    toaster.error("");
     const newUploads = files.map((file) => ({
       id: URL.createObjectURL(file),
       name: file.name,
@@ -70,17 +70,16 @@ export default function VideoInput() {
     });
   };
 
-  // 🚀 Upload Post to Backend
   const uploadPost = async () => {
-    setError("");
+    toaster.error("");
 
     if (!description.trim()) {
-      setError("❌ Please enter a description before uploading.");
+      toaster.error(" Please enter a description before uploading.");
       return;
     }
 
     if (fileList.length === 0) {
-      setError("❌ Please choose at least one MP4 video file.");
+      toaster.error(" Please choose at least one MP4 video file.");
       return;
     }
 
@@ -91,8 +90,8 @@ export default function VideoInput() {
     try {
       setUploading(true);
       const token = localStorage.getItem("token"); 
-
-      const response = await axios.post("http://localhost:5000/posts", formData, {
+           
+      const response = await axios.post("http://127.0.0.1:8081/api/user/auth/posts", formData, {
         headers: {
           "Content-Type": "multipart/form-data",
           Authorization: `Bearer ${token}`,
@@ -107,18 +106,17 @@ export default function VideoInput() {
         },
       });
 
-      alert("✅ Post uploaded successfully!");
+      toaster.success(" Post uploaded successfully!");
       console.log(response.data);
 
       navigate("/getpost");
 
-      // Reset form
       setUploads([]);
       setFileList([]);
       setDescription("");
     } catch (error) {
       console.error("Error uploading post:", error);
-      setError(
+      toaster.error(
         error.response?.data?.message || "❌ Error uploading post. Please try again."
       );
     } finally {
@@ -159,13 +157,6 @@ export default function VideoInput() {
             onChange={handleFileChange}
           />
         </div>
-
-        {/* ⚠️ Error */}
-        {error && (
-          <div className="alert alert-danger text-center" role="alert">
-            {error}
-          </div>
-        )}
 
         {/* 📊 Preview & Progress */}
         <div className="row mt-3">

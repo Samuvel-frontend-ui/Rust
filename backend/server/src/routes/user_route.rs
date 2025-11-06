@@ -1,6 +1,6 @@
 use actix_web::web;
 use crate::handlers::user_handler;
-// use crate::handlers::post_handler;
+use crate::handlers::post_handler;
 use crate::db::DbPool;
 use crate::middleware::auth::AuthMiddlewareFactory;
 
@@ -26,8 +26,8 @@ pub fn init(cfg: &mut web::ServiceConfig, pool: DbPool, jwt_secret: String) {
                     .route("/followings/{user_id}", web::get().to(user_handler::following_list))
                     .route("/follow-req/{user_id}", web::get().to(user_handler::follow_requests))
                     .route("/handle-follow-req/{request_id}", web::post().to(user_handler::handle_follow_request))
-                    // .route("/post", web::post().to(post_handler::create_user_post))
-                    // .route("/getpost", web::get().to(post_handler::get_user_posts)),
+                    .route("/posts", web::post().to(post_handler::create_user_post))
+                    .route("/getpost", web::get().to(post_handler::get_user_posts))
             ),
     );
 }

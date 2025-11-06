@@ -4,17 +4,19 @@ pub mod schema;
 pub mod handlers;
 pub mod routes;
 pub mod middleware;
+pub mod api_docs;
 
 use actix_web::{App, HttpServer, middleware::Logger, web};
 use actix_files::Files;
 use actix_cors::Cors;
-use db::{DbPool, connection};
-use std::env;
+use db::{DbPool, connection};   
+use utoipa_swagger_ui::SwaggerUi;
+use crate::api_docs::ApiDoc;
+use utoipa::OpenApi; 
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let pool = connection();
-    
 
     println!("✅ Database connected successfully");
     println!("🚀 Server running on http://127.0.0.1:8081");
@@ -34,6 +36,10 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .configure(|cfg| routes::init(cfg, pool.clone(), "mysecretkey".to_string()))
             .service(Files::new("/profile_pic", "./files/userprofile").show_files_listing())
+            .service(Files::new("/video", "./files/userpost").show_files_listing())
+            .service( SwaggerUi::new("/swagger-ui/{_:.*}")
+            .url("/api-docs/openapi.json", ApiDoc::openapi())
+)
     })
     .bind(("127.0.0.1", 8081))?
     .run()

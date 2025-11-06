@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import DOMPurify from "dompurify";
 
+
 export default function VideoFeed() {
   const [posts, setPosts] = useState([]);
   const navigate = useNavigate();
@@ -11,7 +12,16 @@ export default function VideoFeed() {
   useEffect(() => {
     const fetchPosts = async () => {
       try {
-        const res = await axios.get("http://localhost:5000/getpost");
+        const token = localStorage.getItem("token");
+
+        const res = await axios.get("http://127.0.0.1:8081/api/user/auth/getpost", {
+                    headers: {
+                      "Content-Type": "application/json",
+                      Authorization: `Bearer ${token}`,
+                    },
+                  });
+
+        console.log("Fetched posts:", res.data);
         setPosts(res.data);
       } catch (err) {
         console.error("Error fetching posts:", err);
@@ -49,7 +59,7 @@ export default function VideoFeed() {
                   <img
                     src={
                       post.profile_pic
-                        ? `http://localhost:5000/profile_pic/${post.profile_pic}`
+                        ? `http://127.0.0.1:8081/profile_pic/${post.profile_pic}`
                         : "https://via.placeholder.com/50"
                     }
                     alt="Profile"
@@ -82,7 +92,7 @@ export default function VideoFeed() {
                           }`}
                         >
                           <video
-                            src={`http://localhost:5000${video}`}
+                            src={`http://127.0.0.1:8081/video/${video}`}
                             className="d-block w-100"
                             controls
                           />

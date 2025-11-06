@@ -2,9 +2,10 @@ use diesel::prelude::*;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 use chrono::NaiveDateTime;
+use utoipa::{ToSchema, IntoParams};
 use crate::schema::{users, password_reset_tokens, follows};
 
-#[derive(Queryable, Serialize, Clone )]
+#[derive(Queryable, Serialize, Clone, ToSchema )]
 #[diesel(table_name = users)]
 pub struct User {
     pub id: Uuid,
@@ -18,12 +19,9 @@ pub struct User {
     pub created_at: NaiveDateTime,
 }
 
-#[derive(Insertable, Deserialize)]
+#[derive(Insertable, Deserialize, ToSchema)]
 #[diesel(table_name = users)]
 pub struct NewUser {
-    #[serde(skip_deserializing)] 
-    pub id: Uuid,
-
     pub name: String,
     pub email: String,
     pub password: String,
@@ -33,18 +31,18 @@ pub struct NewUser {
     pub profile_pic: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ForgotPasswordRequest {
     pub email: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct Claims {
     pub email: String,
     pub id: String,
@@ -52,7 +50,7 @@ pub struct Claims {
     pub exp: usize,
 }
 
-#[derive(Queryable, Insertable, Serialize, Deserialize, Debug)]
+#[derive(Queryable, Insertable, Serialize, Deserialize, Debug, ToSchema)]
 #[diesel(table_name = password_reset_tokens)]
 pub struct PasswordResetToken {
     pub id: i32,
@@ -61,13 +59,13 @@ pub struct PasswordResetToken {
     pub expires_at: NaiveDateTime,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
 }
 
-#[derive(Queryable, Serialize)]
+#[derive(Queryable, Serialize, ToSchema)]
 pub struct UserListItem {
     pub id: Uuid,
     pub name: String,
@@ -77,7 +75,7 @@ pub struct UserListItem {
     pub created_at: NaiveDateTime,
 }
 
-#[derive(Queryable, Insertable)]
+#[derive(Queryable, Insertable, ToSchema)]
 #[diesel(table_name = follows)]
 pub struct Follow {
     pub id: Uuid,
@@ -87,7 +85,7 @@ pub struct Follow {
     pub created_at: Option<chrono::NaiveDateTime>,
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, ToSchema)]
 #[table_name = "follows"]
 pub struct NewFollow {
     pub user_id: Uuid,
@@ -95,7 +93,7 @@ pub struct NewFollow {
     pub status: String,
 }
                             
-#[derive(Queryable, Selectable, Serialize)]
+#[derive(Queryable, Selectable, Serialize, ToSchema)]
 #[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct UserProfile {
@@ -108,7 +106,7 @@ pub struct UserProfile {
     pub address: Option<String>,
 }
 
-#[derive(AsChangeset)]
+#[derive(AsChangeset, ToSchema)]
 #[diesel(table_name = users)]
 pub struct UserUpdate {
     pub name: String,
@@ -118,7 +116,7 @@ pub struct UserUpdate {
     pub phoneno: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct UserUpdateRequest {
     pub username: Option<String>,
     pub email: Option<String>,
@@ -128,3 +126,49 @@ pub struct UserUpdateRequest {
     pub loggedInUserId: Option<Uuid>,
 }
 
+#[derive(Deserialize, ToSchema, IntoParams)]
+pub struct PaginationParams {
+    pub page: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+ #[derive(Deserialize, ToSchema)]
+pub struct FollowBody {
+    pub userId: String,
+    pub targetId: String,
+    pub action: String,
+    pub isRequest: Option<bool>,
+}
+
+#[derive(Queryable, Serialize, ToSchema)]
+pub struct FollowerInfo {
+    pub user_id: Uuid,
+    pub name: String,
+    pub profile_pic: Option<String>,
+}
+
+#[derive(Queryable, Serialize, Identifiable, ToSchema)]
+#[diesel(table_name = follows)]
+#[diesel(primary_key(id))]
+pub struct Followreq {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub target_id: Uuid,
+    pub status: String,
+    pub created_at: NaiveDateTime,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PendingRequest {
+    pub id: Uuid,
+    pub requester_id: Uuid,
+    pub username: String,
+    pub profile_pic: Option<String>,
+}
+
+
+#[derive(Deserialize, ToSchema)]
+pub struct HandleFollowRequest {
+    pub action: String,
+    pub ownerId: Option<String>, // Add this
+}

@@ -4,6 +4,7 @@ import axios from "axios";
 import { AuthContext } from "../authcontext.jsx";
 import PhoneInput from "react-phone-input-2";
 import "react-phone-input-2/lib/style.css";
+import { toaster } from "../Globaltoaster.jsx";
 
 const API_BASE = "http://localhost:8081/api/user/auth";
 
@@ -159,10 +160,10 @@ function Profile() {
       const updatedProfile = res.data;
       setProfile(updatedProfile);
       setEditing(false);
-      alert("Profile updated successfully!");
+      toaster.success("Profile updated successfully!");
     } catch (err) {
       console.error("Failed to update profile:", err);
-      alert("Failed to update profile");
+      toaster.success("Failed to update profile");
     }
   };
 
@@ -180,38 +181,72 @@ function Profile() {
         setFollowersCount((prev) => prev + 1);
       }
       
-      alert(`Request ${action}ed successfully`);
+      toaster.success(`Request ${action}ed successfully`);
     } catch (err) {
       console.error("Follow request action failed:", err);
-      alert(`Failed to ${action} request`);
+      toaster.error(`Failed to ${action} request`);
     }
   };
 
-  // ✅ Follow/Unfollow - FIXED
+  // ✅ Fixed handleFollowAction
   const handleFollowAction = async (targetUserId, action) => {
+    if (!targetUserId) {
+      console.error("❌ Missing targetUserId when calling handleFollowAction");
+      toaster.success("Target user ID not found!");
+      return;
+    }
+
     try {
-      await axios.post(
-        "http://localhost:8081/api/user/auth/follow",
-        { 
-          userId: user.id, 
-          targetId: targetUserId,
-          action, 
-          isRequest: false
+      console.log("Follow API called ->", {
+        userId: user.id,
+        targetId: targetUserId,
+        action,
+        isRequest: false,
+      });
+
+      const res = await axios.post(
+        `${API_BASE}/follow`,
+        {
+          userId: user.id,        
+          targetId: targetUserId,  
+          action,                  
+          isRequest: false,        
         },
-        { headers: { Authorization: `Bearer ${token}` } }
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        }
       );
 
-      if (action === "unfollow") {
-        setFollowingCount((prev) => Math.max(prev - 1, 0));
-        setFollowingList((prev) => prev.filter((f) => f.id !== targetUserId));
-      } else if (action === "follow") {
-        setFollowingCount((prev) => prev + 1);
+      console.log("Follow API response:", res.data);
+
+      if (res.data.success) {
+        if (action === "unfollow") {
+          setFollowingCount((prev) => Math.max(prev - 1, 0));
+          // Remove from following list using multiple possible ID fields
+          setFollowingList((prev) =>
+            prev.filter((f) => {
+              const fId = f.target_id || f.targetId || f.userId || f.user_id || f.id;
+              return String(fId) !== String(targetUserId);
+            })
+          );
+          toaster.success(res.data.message || "Unfollowed successfully!");
+        } else if (action === "follow") {
+          setFollowingCount((prev) => prev + 1);
+          toaster.success(res.data.message || "Followed successfully!");
+        }
+      } else {
+        toaster.success(res.data.message || `Failed to ${action}`);
       }
-      
-      alert(`Successfully ${action}ed the user.`);
     } catch (err) {
-      console.error(`Failed to ${action}:`, err);
-      alert(`Failed to ${action} user`);
+      console.error(`❌ Failed to ${action}:`, err);
+      if (err.response?.data?.message) {
+        toaster.success(err.response.data.message);
+      } else {
+        toaster.success(`Network error: ${err.message}`);
+      }
     }
   };
 
@@ -231,7 +266,7 @@ function Profile() {
   if (!profile)
     return (
       <div className="container mt-5">
-        <div className="alert alert-warning text-center" role="alert">
+        <div className="toaster.success toaster.success-warning text-center" role="toaster.success">
           <i className="bi bi-exclamation-triangle-fill me-2"></i>
           Profile not found
         </div>
@@ -502,14 +537,6 @@ function Profile() {
                                 />
                                 <span className="fw-semibold">{f.name}</span>
                               </div>
-                              {!isOwner && (
-                                <button
-                                  className="btn btn-primary btn-sm shadow-sm"
-                                  onClick={() => handleFollowAction(f.id, "follow")}
-                                >
-                                  <i className="bi bi-person-plus me-1"></i>Follow
-                                </button>
-                              )}
                             </div>
                           </div>
                         ))}
@@ -529,7 +556,7 @@ function Profile() {
               </div>
             )}
 
-            {/* Following List */}
+            {/* Following List - FIXED VERSION */}
             {showFollowing && (
               <div className="card border-0 shadow-sm mb-4">
                 <div className="card-header bg-success text-white">
@@ -553,37 +580,56 @@ function Profile() {
                   ) : (
                     <>
                       <div className="row g-3">
-                        {followingList.map((f, index) => (
-                          <div key={f.id || `following-${index}`} className="col-12">
-                            <div className="d-flex align-items-center justify-content-between p-3 bg-light rounded shadow-sm">
-                              <div className="d-flex align-items-center">
-                                <img
-                                  src={
-                                    f.profile_pic
-                                      ? `http://127.0.0.1:8081/profile_pic/${f.profile_pic}`
-                                      : "/default-profile.png"
-                                  }
-                                  alt={f.username}
-                                  className="rounded-circle border border-2 border-success me-3"
-                                  style={{
-                                    width: "50px",
-                                    height: "50px",
-                                    objectFit: "cover",
-                                  }}
-                                />
-                                <span className="fw-semibold">{f.name}</span>
+                        {followingList.map((f, index) => {
+                          // 🔍 Try multiple possible field names for the user ID
+                          const targetUserId = f.target_id || f.targetId || f.userId || f.user_id || f.id;
+                          
+                          // Debug logging (remove after fixing)
+                          if (index === 0) {
+                            console.log("🔍 First following item structure:", f);
+                            console.log("🔍 Extracted targetUserId:", targetUserId);
+                          }
+                          
+                          return (
+                            <div key={f.id || `following-${index}`} className="col-12">
+                              <div className="d-flex align-items-center justify-content-between p-3 bg-light rounded shadow-sm">
+                                <div className="d-flex align-items-center">
+                                  <img
+                                    src={
+                                      f.profile_pic
+                                        ? `http://127.0.0.1:8081/profile_pic/${f.profile_pic}`
+                                        : "/default-profile.png"
+                                    }
+                                    alt={f.username || f.name}
+                                    className="rounded-circle border border-2 border-success me-3"
+                                    style={{
+                                      width: "50px",
+                                      height: "50px",
+                                      objectFit: "cover",
+                                    }}
+                                  />
+                                  <span className="fw-semibold">{f.name || f.username}</span>
+                                </div>
+                                {isOwner && (
+                                  <button
+                                    className="btn btn-outline-danger btn-sm shadow-sm"
+                                    onClick={() => {
+                                      if (!targetUserId) {
+                                        console.error("❌ Cannot find user ID in object:", f);
+                                        toaster.success("Error: User ID not found. Check console for details.");
+                                        return;
+                                      }
+                                  
+                                      handleFollowAction(targetUserId, "unfollow");
+                                    }}
+                                  >
+                                    <i className="bi bi-person-dash me-1"></i>Unfollow
+                                  </button>
+                                )}
                               </div>
-                              {isOwner && (
-                                <button
-                                  className="btn btn-outline-danger btn-sm shadow-sm"
-                                  onClick={() => handleFollowAction(f.id, "unfollow")}
-                                >
-                                  <i className="bi bi-person-dash me-1"></i>Unfollow
-                                </button>
-                              )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                       {hasMoreFollowing && (
                         <button

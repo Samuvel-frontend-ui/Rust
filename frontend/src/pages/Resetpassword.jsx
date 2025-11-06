@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { toaster } from "../Globaltoaster";
 
 function ResetPassword() {
   const [password, setPassword] = useState("");
@@ -22,24 +23,24 @@ function ResetPassword() {
     const trimmedConfirm = confirmPassword.trim();
 
     if (!trimmedPassword || !trimmedConfirm) {
-      setMessage("Please fill all fields.");
+      toaster.error("Please fill all fields.");
       return;
     }
 
     if (!passwordRegex.test(trimmedPassword)) {
-      setMessage(
+      toaster.error(
         "Password must be at least 8 characters long, include uppercase, lowercase, number, and special character."
       );
       return;
     }
 
     if (commonPasswords.includes(trimmedPassword)) {
-      setMessage("Please choose a stronger, less common password.");
+      toaster.error("Please choose a stronger, less common password.");
       return;
     }
 
     if (trimmedPassword !== trimmedConfirm) {
-      setMessage("Passwords do not match.");
+      toaster.error("Passwords do not match.");
       return;
     }
 
@@ -48,10 +49,10 @@ function ResetPassword() {
         token,
         new_password: trimmedPassword,
       });
-      setMessage("Password reset successfully!");
+      toaster.success("Password reset successfully!");
       navigate("/login");
     } catch (err) {
-      setMessage(err.response?.data?.message || "Something went wrong");
+      toaster.error(err.response?.data?.message || "Something went wrong");
     }
   };
 

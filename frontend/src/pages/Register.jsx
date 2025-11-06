@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import PhoneInput from "react-phone-input-2";
 import "react-phone-input-2/lib/bootstrap.css";
+import { toaster } from "../Globaltoaster.jsx";
 
 function Register() {
   const [showPassword, setShowPassword] = useState(false);
@@ -75,7 +76,7 @@ function Register() {
       const response = await axios.post("http://localhost:8081/api/user/register", formData);
 
       if (response.status >= 200 && response.status < 300) {
-        setSuccess(response.data.message || "Registered successfully ✅");
+        toaster.success(response.data.message || "Registered successfully ✅");
         setErrors({});
         setName("");
         setEmail("");
@@ -256,7 +257,7 @@ function Register() {
           </div>
 
           {errors.global && <div className="alert alert-danger">{errors.global}</div>}
-          {success && <div className="alert alert-success">{success}</div>}
+         
 
           <button
             type="submit"

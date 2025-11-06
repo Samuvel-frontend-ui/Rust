@@ -2,6 +2,7 @@ import React, { useState, useContext } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { AuthContext } from "../authcontext.jsx";
 import axios from "axios";
+import { toaster } from "../Globaltoaster.jsx";
 
 function Login() {
   const [email, setEmail] = useState("");
@@ -13,13 +14,11 @@ function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
         try {
         const response = await axios.post("http://127.0.0.1:8081/api/user/login", {
         email,
         password,
     });
-
 
       const data = response.data;
 
@@ -29,8 +28,10 @@ function Login() {
       }
 
       login(data.token, data.user);
-      setMessage("✅ Login successful!");
-      navigate("/home");
+      toaster.success(" Login successful!");
+      setTimeout(() => {
+          navigate("/home");
+        }, 150000);
     } catch (error) {
       console.error("Login error:", error);
       setMessage(error.response?.data?.message || "Server error, please try again.");
