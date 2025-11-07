@@ -31,7 +31,7 @@ function Login() {
       toaster.success(" Login successful!");
       setTimeout(() => {
           navigate("/home");
-        }, 150000);
+        }, 1500);
     } catch (error) {
       console.error("Login error:", error);
       setMessage(error.response?.data?.message || "Server error, please try again.");

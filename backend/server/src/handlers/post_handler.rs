@@ -8,17 +8,20 @@ use diesel::prelude::*;
 use std::fs;
 use std::io::Write;
 use chrono::{NaiveDateTime, Utc, Duration};
-use crate::models::post::NewUserPost;
+use crate::models::post::{NewUserPost, UserPostWithUser ,UserPostResponse, UserPost};
 use crate::models::user::User;
 use crate::schema::user_posts;
 use crate::DbPool;
 use utoipa::path;
 
+
+
 #[utoipa::path(
     post,
-    path = "/api/post/upload",
+    path = "/api/user/auth/posts",
     request_body(
-        content = Multipart,
+        content = NewUserPost,
+        content_type = "multipart/form-data",
         description = "Multipart form data with description and videos"
     ),
     responses(
@@ -26,9 +29,11 @@ use utoipa::path;
         (status = 400, description = "Bad request: missing description or videos"),
         (status = 401, description = "Unauthorized user")
     ),
-    tag = "Posts"
+    tag = "Posts",
+     security(
+        ("bearerAuth" = [])
+    )
 )]
-
 
 pub async fn create_user_post(
     pool: web::Data<DbPool>,
@@ -121,26 +126,23 @@ pub async fn create_user_post(
     })))
 }
 
-#[derive(Serialize, Queryable, Selectable)]
-#[diesel(table_name = crate::schema::user_posts)]
-pub struct UserPostWithUser {
-    pub id: Uuid,
-    pub user_id: Option<Uuid>,
-    pub description: String,
-    pub videos: Vec<Option<String>>,
-    pub created_at: Option<NaiveDateTime>,
-}
-
-#[derive(Serialize)]
-pub struct UserPostResponse {
-    pub id: Uuid,
-    pub user_id: Option<Uuid>,
-    pub description: String,
-    pub videos: Vec<String>,  // Cleaned up without Option
-    pub created_at: Option<NaiveDateTime>,
-    pub user_name: Option<String>,
-    pub profile_pic: Option<String>,
-}
+#[utoipa::path(
+    post,
+    path = "/api/user/auth/getpost",
+    request_body(
+        content = Multipart,
+        description = "Multipart form data with description and videos"
+    ),
+    responses(
+        (status = 201, description = "Post uploaded successfully", body = PostResponse),
+        (status = 400, description = "Bad request: missing description or videos"),
+        (status = 401, description = "Unauthorized user")
+    ),
+    tag = "Posts",
+    security(
+        ("bearerAuth" = [])
+    )
+)]
 
 pub async fn get_user_posts(pool: web::Data<DbPool>) -> Result<HttpResponse, Error> {
     let conn = &mut pool.get().expect("Couldn't get DB connection");

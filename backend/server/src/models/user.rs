@@ -19,15 +19,29 @@ pub struct User {
     pub created_at: NaiveDateTime,
 }
 
+
 #[derive(Insertable, Deserialize, ToSchema)]
 #[diesel(table_name = users)]
 pub struct NewUser {
+    #[schema(example = "John Doe")]
     pub name: String,
+    
+    #[schema(example = "john@example.com")]
     pub email: String,
+    
+    #[schema(example = "SecurePass123!")]
     pub password: String,
+    
+    #[schema(example = "123 Main St, City")]
     pub address: String,
+    
+    #[schema(example = "+1234567890")]
     pub phoneno: String,
+    
+    #[schema(example = "public", default = "public")]
     pub account_type: String,
+    
+    #[schema(value_type = Option<String>, format = Binary)]
     pub profile_pic: Option<String>,
 }
 
@@ -171,4 +185,11 @@ pub struct PendingRequest {
 pub struct HandleFollowRequest {
     pub action: String,
     pub ownerId: Option<String>, // Add this
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct LoginResponse {
+    pub message: String,
+    pub token: String,
+    pub user: serde_json::Value,
 }

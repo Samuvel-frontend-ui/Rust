@@ -70,10 +70,10 @@ function Register() {
       formData.append("password", password);
       formData.append("address", address);
       formData.append("profile_pic", profilePic);
-     formData.append("account_type", accountType); 
+      formData.append("account_type", accountType); 
       formData.append("phoneno", phoneno);
 
-      const response = await axios.post("http://localhost:8081/api/user/register", formData);
+      const response = await axios.post("http://127.0.0.1:8081/api/user/register", formData);
 
       if (response.status >= 200 && response.status < 300) {
         toaster.success(response.data.message || "Registered successfully ✅");

@@ -25,6 +25,7 @@ async fn main() -> std::io::Result<()> {
         let cors = Cors::default()
             .allowed_origin("http://localhost:5173")
             .allowed_origin("http://127.0.0.1:5173")
+            .allowed_origin("http://127.0.0.1:8081")
             .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
             .allowed_headers(vec!["Content-Type", "Authorization"])
             .supports_credentials()

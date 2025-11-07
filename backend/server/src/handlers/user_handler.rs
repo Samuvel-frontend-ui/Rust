@@ -1,6 +1,7 @@
 use actix_multipart::Multipart;
 use actix_web::{web, HttpResponse, HttpRequest, HttpMessage, Responder, Error};
 use utoipa::path;
+use tokio::io::AsyncWriteExt;
 use diesel::prelude::*;
 use diesel::associations::HasTable;
 use serde::{Serialize, Deserialize};
@@ -12,6 +13,7 @@ use lettre::{
     SmtpTransport, Transport,
 };
 use futures_util::StreamExt;
+use futures_util::TryStreamExt as _;
 use std::io::Write;
 use uuid::Uuid;
 use serde_json::json;
@@ -31,15 +33,26 @@ use crate::schema::users::dsl::*;
 
 #[utoipa::path(
     post,
-    path = "api/user/register",
-    request_body = NewUser,
+    path = "/api/user/register",
+    tag = "ENTRY",
+    request_body(
+        content = NewUser,
+        content_type = "multipart/form-data",
+        description = "User registration form (supports profile_pic upload)"
+    ),
     responses(
         (status = 200, description = "User registered successfully"),
-        (status = 400, description = "Invalid input")
+        (status = 400, description = "Invalid input or missing field"),
+        (status = 409, description = "Email already exists")
     )
 )]
-
 pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> impl Responder {
+    use crate::schema::users::dsl::*;
+    use diesel::prelude::*;
+    use futures_util::StreamExt;
+    use bcrypt::{hash, DEFAULT_COST};
+    use uuid::Uuid;
+
     let mut user_name = String::new();
     let mut user_email = String::new();
     let mut user_password = String::new();
@@ -48,27 +61,48 @@ pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> i
     let mut user_account_type = String::from("public");
     let mut profile_pic_filename: Option<String> = None;
 
+    let mut fields_received = Vec::new();
+
     while let Some(item) = payload.next().await {
         let mut field = match item {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("❌ Multipart read error: {}", e);
-                return HttpResponse::BadRequest().json(json!({"message": "Invalid upload"}));
+                return HttpResponse::BadRequest().json(json!({
+                    "message": "Invalid multipart upload",
+                    "error": format!("{:?}", e)
+                }));
             }
         };
 
-        let field_name = field.name().to_string();
+        let field_name = field
+            .content_disposition()
+            .get_name()
+            .unwrap_or("")
+            .to_string();
+
+       
+        fields_received.push(field_name.clone());
 
         if ["name", "email", "password", "address", "phoneno", "account_type"]
             .contains(&field_name.as_str())
         {
             let mut data = Vec::new();
             while let Some(chunk) = field.next().await {
-                if let Ok(bytes) = chunk {
-                    data.extend_from_slice(&bytes);
+                match chunk {
+                    Ok(bytes) => data.extend_from_slice(&bytes),
+                    Err(e) => {
+                        eprintln!("❌ Error reading chunk: {}", e);
+                        return HttpResponse::BadRequest().json(json!({
+                            "message": "Error reading field data",
+                            "field": field_name
+                        }));
+                    }
                 }
             }
-            let value = String::from_utf8(data).unwrap_or_default();
+            
+            let value = String::from_utf8_lossy(&data).trim().to_string();
+        
 
             match field_name.as_str() {
                 "name" => user_name = value,
@@ -80,35 +114,98 @@ pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> i
                 _ => {}
             }
         } else if field_name == "profile_pic" {
+            println!("   Processing profile picture...");
+            
             let upload_dir = "./files/userprofile";
             if let Err(e) = std::fs::create_dir_all(upload_dir) {
                 eprintln!("❌ Failed to create upload dir: {}", e);
+                return HttpResponse::InternalServerError().json(json!({
+                    "message": "Failed to create upload directory"
+                }));
             }
 
             let filename = field
                 .content_disposition()
                 .get_filename()
-                .map(|f| format!("{}_{}", Uuid::new_v4(), f))
+                .map(|f| {
+                    println!("   Original filename: {}", f);
+                    format!("{}_{}", Uuid::new_v4(), f)
+                })
                 .unwrap_or_else(|| format!("{}.jpg", Uuid::new_v4()));
 
             let filepath = format!("{}/{}", upload_dir, filename);
-            match std::fs::File::create(&filepath) {
+            println!("   Saving to: {}", filepath);
+
+            match tokio::fs::File::create(&filepath).await {
                 Ok(mut file) => {
+                    let mut total_bytes = 0;
                     while let Some(chunk) = field.next().await {
-                        if let Ok(data) = chunk {
-                            if let Err(e) = file.write_all(&data) {
-                                eprintln!("File write error: {}", e);
+                        match chunk {
+                            Ok(data) => {
+                                total_bytes += data.len();
+                                if let Err(e) = file.write_all(&data).await {
+                                    eprintln!("❌ File write error: {}", e);
+                                    return HttpResponse::InternalServerError().json(json!({
+                                        "message": "Failed to write file"
+                                    }));
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Error reading file chunk: {}", e);
+                                return HttpResponse::BadRequest().json(json!({
+                                    "message": "Error reading file data"
+                                }));
                             }
                         }
                     }
-                    profile_pic_filename = Some(filename.clone());
+                    println!("   ✅ File saved: {} bytes", total_bytes);
+                    profile_pic_filename = Some(filename);
                 }
                 Err(e) => {
-                    eprintln!("❌ File create error: {}", e);
+                    eprintln!("❌ Could not create file at {}: {}", filepath, e);
+                    return HttpResponse::InternalServerError().json(json!({
+                        "message": "Failed to create file"
+                    }));
                 }
             }
+        } else {
+            println!("   ⚠️  Unknown field, skipping...");
         }
     }
+
+    // ✅ Validate all fields
+    if user_name.is_empty() {
+        return HttpResponse::BadRequest().json(json!({
+            "message": "Name is required",
+            "fields_received": fields_received
+        }));
+    }
+    if user_email.is_empty() {
+        return HttpResponse::BadRequest().json(json!({
+            "message": "Email is required",
+            "fields_received": fields_received
+        }));
+    }
+    if user_password.is_empty() {
+        return HttpResponse::BadRequest().json(json!({
+            "message": "Password is required",
+            "fields_received": fields_received
+        }));
+    }
+    if user_address.is_empty() {
+        return HttpResponse::BadRequest().json(json!({
+            "message": "Address is required",
+            "fields_received": fields_received
+        }));
+    }
+    if user_phoneno.is_empty() {
+        return HttpResponse::BadRequest().json(json!({
+            "message": "Phone number is required",
+            "fields_received": fields_received
+        }));
+    }
+
+    println!("✅ All validations passed");
 
     let mut conn = match pool.get() {
         Ok(c) => c,
@@ -119,10 +216,7 @@ pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> i
         }
     };
 
-    if user_email.trim().is_empty() {
-        return HttpResponse::BadRequest().json(json!({"message": "Email is required"}));
-    }
-
+    println!("🔍 Checking for existing user...");
     let existing = users
         .filter(email.eq(&user_email))
         .first::<User>(&mut conn)
@@ -130,9 +224,11 @@ pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> i
         .unwrap_or(None);
 
     if existing.is_some() {
-        return HttpResponse::Conflict().json(json!({"message": "Email already exists ❌"}));
+        println!("❌ Email already exists");
+        return HttpResponse::Conflict().json(json!({"message": "Email already exists"}));
     }
 
+    println!("🔐 Hashing password...");
     let hashed = match hash(&user_password, DEFAULT_COST) {
         Ok(h) => h,
         Err(e) => {
@@ -143,28 +239,35 @@ pub async fn register_user(pool: web::Data<DbPool>, mut payload: Multipart) -> i
     };
 
     let new_user = NewUser {
-        name: user_name,
+        name: user_name.clone(),
         email: user_email.clone(),
         password: hashed,
-        address: user_address,
-        phoneno: user_phoneno,
-        account_type: user_account_type,
+        address: user_address.clone(),
+        phoneno: user_phoneno.clone(),
+        account_type: user_account_type.clone(),
         profile_pic: profile_pic_filename.clone(),
     };
 
+    println!("💾 Inserting user into database...");
     if let Err(e) = diesel::insert_into(users).values(&new_user).execute(&mut conn) {
         eprintln!("❌ DB insert error: {}", e);
-        return HttpResponse::InternalServerError().json(json!({"message": "Database insert failed"}));
+        return HttpResponse::InternalServerError().json(json!({
+            "message": "Database insert failed",
+            "error": format!("{:?}", e)
+        }));
     }
 
+    println!("✅ User registered successfully: {}", user_email);
     HttpResponse::Ok().json(json!({
-        "message": "Registered successfully ✅"
+        "message": "Registered successfully ✅",
+        "email": user_email
     }))
 }
 
 #[utoipa::path(
     post,
-    path = "api/user/login",
+    path = "/api/user/login",
+    tag = "ENTRY",
     request_body = LoginRequest,
     responses(
         (status = 200, description = "Login successful", body = serde_json::Value),
@@ -229,7 +332,8 @@ pub async fn login(pool: web::Data<DbPool>, data: web::Json<LoginRequest>) -> im
 
 #[utoipa::path(
     post,
-    path = "api/user/forgot-password",
+    tag = "ENTRY",
+    path = "/api/user/forgot-password",
     request_body(
         content = ForgotPasswordRequest,
         description = "Email of the user requesting a password reset",
@@ -240,7 +344,7 @@ pub async fn login(pool: web::Data<DbPool>, data: web::Json<LoginRequest>) -> im
         (status = 400, description = "Invalid user email", body = serde_json::Value),
         (status = 500, description = "Email sending failed or database error", body = serde_json::Value)
     ),
-    tag = "User"
+
 )]
 
 pub async fn forgot_password(pool: web::Data<DbPool>,body: web::Json<ForgotPasswordRequest>,) -> impl Responder {
@@ -300,7 +404,8 @@ pub async fn forgot_password(pool: web::Data<DbPool>,body: web::Json<ForgotPassw
 
 #[utoipa::path(
     post,
-    path = "/user/reset-password",
+    tag = "ENTRY",
+    path = "/api/user/reset-password",
     request_body(
         content = ResetPasswordRequest,
         description = "Token and new password for resetting the user's password",
@@ -311,7 +416,7 @@ pub async fn forgot_password(pool: web::Data<DbPool>,body: web::Json<ForgotPassw
         (status = 400, description = "Token expired or invalid", body = serde_json::Value),
         (status = 500, description = "Database error or password hashing failed", body = serde_json::Value)
     ),
-    tag = "User"
+   
 )]
 
 pub async fn reset_password(pool: web::Data<DbPool>,body: web::Json<ResetPasswordRequest>,) -> impl Responder {
@@ -356,7 +461,7 @@ pub async fn reset_password(pool: web::Data<DbPool>,body: web::Json<ResetPasswor
 
 #[utoipa::path(
     get,
-    path = "api/user/auth/get-users",
+    path = "/api/user/auth/get-users",
     params(
         PaginationParams
     ),
@@ -365,7 +470,10 @@ pub async fn reset_password(pool: web::Data<DbPool>,body: web::Json<ResetPasswor
         (status = 401, description = "Unauthorized", body = serde_json::Value),
         (status = 500, description = "Database error", body = serde_json::Value)
     ),
-    tag = "User"
+    tag = "User",
+     security(
+        ("bearerAuth" = [])
+    )
 )]
 
 pub async fn get_users(pool: web::Data<DbPool>,req: HttpRequest,query: web::Query<PaginationParams>,) -> Result<HttpResponse, Error> {
@@ -404,14 +512,17 @@ pub async fn get_users(pool: web::Data<DbPool>,req: HttpRequest,query: web::Quer
 
 #[utoipa::path(
     post,
-    path = "api/user/auth/follow",
+    path = "/api/user/auth/follow",
     request_body = FollowBody,
     responses(
         (status = 200, description = "Follow action processed successfully", body = serde_json::Value),
         (status = 400, description = "Bad request, invalid or missing fields", body = serde_json::Value),
         (status = 500, description = "Database error", body = serde_json::Value)
     ),
-    tag = "User"
+    tag = "User",
+     security(
+        ("bearerAuth" = [])
+    )
 )]
 
 pub async fn follow_button(pool: web::Data<DbPool>,body: web::Json<FollowBody>,) -> Result<HttpResponse, Error> {
@@ -537,7 +648,7 @@ pub async fn follow_button(pool: web::Data<DbPool>,body: web::Json<FollowBody>,)
 
 #[utoipa::path(
     get,
-    path = "api/user/auth/following/{user_id}",
+    path = "/api/user/auth/following/{user_id}",
     params(
         ("user_id" = String, Path, description = "UUID of the user to fetch following list")
     ),
@@ -575,7 +686,7 @@ pub async fn following(pool: web::Data<DbPool>, path: web::Path<String>) -> Resu
 
 #[utoipa::path(
     get,
-    path = "api/user/auth/profile",
+    path = "/api/user/auth/profile/{user_id}",
     responses(
         (status = 200, description = "Fetch logged-in user's profile", body = serde_json::Value),
         (status = 401, description = "Unauthorized", body = serde_json::Value),
@@ -648,7 +759,7 @@ pub async fn profile_get(pool: web::Data<DbPool>,req: HttpRequest,) -> Result<Ht
 
 #[utoipa::path(
     put,
-    path = "api/user/auth/profile",
+    path = "/api/user/auth/profile-update/{user_id}",
     request_body = UserUpdateRequest,
     responses(
         (status = 200, description = "Profile updated successfully", body = serde_json::Value),
@@ -726,9 +837,9 @@ pub async fn profile_update(pool: web::Data<DbPool>,req: HttpRequest,body: web::
 
 #[utoipa::path(
     get,
-    path = "api/user/auth/followers",
+    path = "/api/user/auth/followers/{user_id}",
     params(
-        PaginationParams
+        PaginationParams, 
     ),
     responses(
         (status = 200, description = "List of followers", body = serde_json::Value),
@@ -798,7 +909,7 @@ pub async fn followers_list(pool: web::Data<DbPool>,req: HttpRequest,
 
 #[utoipa::path(
     get,
-    path = "api/user/auth/following",
+    path = "/api/user/auth/followings/{user_id}",
     params(
         PaginationParams
     ),
@@ -871,7 +982,7 @@ pub async fn following_list(pool: web::Data<DbPool>,req: HttpRequest,
 
 #[utoipa::path(
     get,
-    path = "/user/follow-requests",
+    path = "/api/user/auth/follow-req/{user_id}",
     responses(
         (status = 200, description = "List of pending follow requests", body = serde_json::Value),
         (status = 401, description = "Unauthorized", body = serde_json::Value),
@@ -941,10 +1052,9 @@ pub async fn follow_requests(pool: web::Data<DbPool>,req: HttpRequest,) -> Resul
     })))
 }
 
-
 #[utoipa::path(
     put,
-    path = "/user/follow-requests/{id}",
+    path = "/api/user/auth/handle-follow-req/{request_id}",
     request_body(content = HandleFollowRequest, description = "Approve or reject a follow request"),
     responses(
         (status = 200, description = "Follow request handled successfully", body = serde_json::Value),
