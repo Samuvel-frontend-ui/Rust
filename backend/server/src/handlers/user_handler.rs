@@ -33,7 +33,7 @@ use crate::schema::users::dsl::*;
 
 #[utoipa::path(
     post,
-    path = "/api/user/register",
+    path = "/api/user/registe",
     tag = "ENTRY",
     request_body(
         content = NewUser,
